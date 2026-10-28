@@ -6,6 +6,8 @@ use tokio::sync::broadcast;
 use uuid::Uuid;
 
 /// Fan-out of events to the WebSocket connections of one account.
+/// Protocol guarantee: a socket subscribes before its own presence frame is sent, so the
+/// first frame a client receives proves the subscription is live.
 #[derive(Default)]
 pub struct Hub {
     inner: Mutex<HubInner>,
