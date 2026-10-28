@@ -7,6 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+bincode = "1"
 git2 = { version = "0.21", default-features = false, features = ["vendored-libgit2"] }
 ignore = "0.4.34"
 serde = { version = "1.0.229", features = ["derive"] }
