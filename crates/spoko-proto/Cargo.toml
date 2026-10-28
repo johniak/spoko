@@ -1,0 +1,9 @@
+[package]
+name = "spoko-proto"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

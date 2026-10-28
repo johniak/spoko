@@ -1,0 +1,9 @@
+[package]
+name = "spoko-tray"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]

@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --exclude spoko-tray --all-targets -- -D warnings
+      - run: cargo test --workspace --exclude spoko-tray
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+        with: { components: llvm-tools-preview }
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/coverage.sh
+  docker:
+    runs-on: ubuntu-latest
+    env: { SPOKO_DOCKER_TESTS: "1" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p spoko-docker --test real_docker
