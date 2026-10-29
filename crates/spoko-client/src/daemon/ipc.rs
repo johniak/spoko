@@ -130,6 +130,7 @@ pub fn default_home() -> PathBuf {
     spoko_core::config::spoko_home()
 }
 
+#[cfg(not(windows))]
 fn fnv(s: &str) -> u64 {
     s.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3))
 }
