@@ -25,7 +25,12 @@ struct Machine {
 
 impl Machine {
     fn new() -> Machine {
-        Machine { dir: tempfile::tempdir().unwrap() }
+        let dir = tempfile::tempdir().unwrap();
+        // every machine of the user has the account's SSH key
+        let ssh = dir.path().join("h/.ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519"), ssh.join("id_ed25519")).unwrap();
+        Machine { dir }
     }
     fn home(&self) -> PathBuf {
         self.dir.path().join("spoko-home")
@@ -76,8 +81,8 @@ fn project_id(out: &str) -> String {
 }
 
 fn login(srv: &TestServer, m: &Machine, name: &str, rk: Option<&str>) -> String {
-    let token = srv.bootstrap_token("jan");
-    let mut args = vec!["login", &srv.url, "--token", &token, "--name", name];
+    srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
+    let mut args = vec!["login", &srv.url, "--name", name];
     if let Some(k) = rk {
         args.extend(["--recovery-key", k]);
     }
@@ -319,14 +324,20 @@ fn pending_hooks_are_listed_run_and_dismissed() {
 }
 
 #[test]
-fn device_revoke_refuses_this_device_and_unknown_names() {
+fn device_remove_logs_out_another_machine_only() {
     let srv = spawn_test_server();
-    let (a, _b) = pair_of_machines(&srv);
-    assert_eq!(a.fail(&["device", "revoke", "mac"], &a.top()), "nie można odebrać dostępu temu urządzeniu");
-    assert_eq!(a.fail(&["device", "revoke", "phone"], &a.top()), "nie ma aktywnego urządzenia „phone”");
+    let (a, b) = pair_of_machines(&srv);
+    assert_eq!(a.fail(&["device", "remove", "mac"], &a.top()), "to jest ten komputer");
+    assert_eq!(a.fail(&["device", "remove", "phone"], &a.top()), "nie ma aktywnego urządzenia „phone”");
     let list = a.ok(&["device", "list"], &a.top());
     assert!(list.contains("mac (ten)\t") && list.contains("linux\t"), "{list}");
     assert!(list.lines().all(|l| l.ends_with("\taktywny")), "{list}");
+    assert_eq!(a.ok(&["device", "remove", "linux"], &a.top()), "Wylogowano: linux\n");
+    assert!(a.ok(&["device", "list"], &a.top()).contains("linux\t") && a.ok(&["device", "list"], &a.top()).contains("\todebrany"));
+    assert!(b.fail(&["device", "list"], &b.top()).contains("unauthorized"));
+    // the machine still has the key, so it can simply log in again
+    login(&srv, &b, "linux", None);
+    assert!(b.ok(&["device", "list"], &b.top()).contains("linux (ten)\t"));
 }
 
 #[test]
@@ -444,13 +455,12 @@ fn volume_command_prints_ok_when_the_daemon_answers_without_text() {
 }
 
 #[test]
-fn bad_project_ids_and_pairing_codes_are_rejected() {
+fn bad_project_ids_are_rejected() {
     let srv = spawn_test_server();
     let m = Machine::new();
     login(&srv, &m, "mac", None);
     assert_eq!(m.fail(&["clone", "not-a-uuid", "x"], &m.top()), "„not-a-uuid” to nie jest identyfikator projektu");
     assert!(!m.path("x").exists(), "nothing created for a bad id");
-    assert_eq!(m.fail(&["device", "approve", "NOPE-CODE", "--yes"], &m.top()), "no pending pairing with code NOPE-CODE");
 }
 
 #[test]

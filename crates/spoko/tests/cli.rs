@@ -9,8 +9,13 @@ struct Machine {
 }
 
 impl Machine {
+    /// The machine has the account's SSH key at `~/.ssh/id_ed25519` (like every machine of the user).
     fn new() -> Machine {
-        Machine { dir: tempfile::tempdir().unwrap() }
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = dir.path().join("h/.ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519"), ssh.join("id_ed25519")).unwrap();
+        Machine { dir }
     }
     fn home(&self) -> PathBuf {
         self.dir.path().join("spoko-home")
@@ -44,8 +49,8 @@ fn recovery_key(out: &str) -> String {
 }
 
 fn login(srv: &TestServer, m: &Machine, name: &str, rk: Option<&str>) -> String {
-    let token = srv.bootstrap_token("jan");
-    let mut args = vec!["login", &srv.url, "--token", &token, "--name", name];
+    srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
+    let mut args = vec!["login", &srv.url, "--name", name];
     if let Some(k) = rk {
         args.extend(["--recovery-key", k]);
     }
@@ -57,7 +62,7 @@ fn project_id(out: &str) -> String {
 }
 
 #[test]
-fn login_bootstrap_prints_recovery_key() {
+fn first_login_prints_recovery_key() {
     let srv = spawn_test_server();
     let m = Machine::new();
     let out = login(&srv, &m, "mac", None);
@@ -67,16 +72,19 @@ fn login_bootstrap_prints_recovery_key() {
     assert!(list.contains("mac"), "{list}");
     let json: serde_json::Value = serde_json::from_str(&m.ok(&["device", "list", "--json"], None)).unwrap();
     assert_eq!(json[0]["name"], "mac");
-    // a second machine recovers the same account with the key
+    // a second machine with the same SSH key joins the same account
     let m2 = Machine::new();
-    let out2 = login(&srv, &m2, "linux", Some(&rk));
+    let out2 = login(&srv, &m2, "linux", None);
     assert!(!out2.contains("Klucz odzyskiwania"));
     assert!(m2.ok(&["device", "list"], None).contains("linux"));
-    let (ok, _, err) = m.run(&["login", &srv.url, "--token", "bogus", "--name", "x"], None);
+    // a key the server does not know
+    let other = spoko_crypto::test_util::key_path("other_ed25519");
+    let (ok, _, err) = m.run(&["login", &srv.url, "--key", other.to_str().unwrap(), "--name", "x"], None);
     assert!(!ok && err.contains("błąd"), "{err}");
-    // base64url tokens may start with '-': must reach the server, not the argument parser
-    let (ok, _, err) = m.run(&["login", &srv.url, "--token", "-mXF5i2P", "--name", "x"], None);
-    assert!(!ok && err.contains("błąd") && !err.contains("unexpected argument"), "{err}");
+    // no key at all
+    std::fs::remove_file(m.path("h/.ssh/id_ed25519")).unwrap();
+    let (ok, _, err) = m.run(&["login", &srv.url, "--name", "x"], None);
+    assert!(!ok && err.contains("ssh-keygen -t ed25519"), "{err}");
 }
 
 #[test]

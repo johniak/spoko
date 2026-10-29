@@ -1,17 +1,22 @@
 use spoko_crypto::ObjectId;
-use spoko_proto::{PairingStatus, Pointer};
+use spoko_proto::{AccountKeyring, Pointer};
 use spoko_server::blobstore::BlobStore;
-use spoko_server::db::{Db, PollOutcome};
+use spoko_server::db::Db;
 use uuid::Uuid;
 
 fn db() -> Db {
     Db::open_in_memory().unwrap()
 }
 
+/// An account whose (fake — the db does not parse keys) key line is `key <name>`.
+fn account(db: &Db, name: &str) -> Uuid {
+    db.create_account(name, &format!("key {name}"), &format!("fp {name}")).unwrap()
+}
+
 #[test]
 fn cas_pointer_create_then_conflict() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
+    let acc = account(&db, "jan");
     let p = db.create_project(acc, b"meta").unwrap();
     assert_eq!(db.get_pointer(p, "head").unwrap(), None);
     let v1 = db.cas_pointer(p, "head", Some(0), b"a").unwrap().unwrap();
@@ -30,89 +35,93 @@ fn cas_pointer_create_then_conflict() {
 }
 
 #[test]
-fn bootstrap_token_single_use() {
+fn accounts_by_name_and_key() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    assert!(db.create_account("jan").is_err());
+    let acc = account(&db, "jan");
+    assert!(db.create_account("jan", "key other", "fp").is_err(), "name taken");
+    assert!(db.create_account("other", "key jan", "fp").is_err(), "key owns an account already");
     assert_eq!(db.account_by_name("jan").unwrap(), Some(acc));
     assert_eq!(db.account_by_name("nobody").unwrap(), None);
-    let t = db.issue_bootstrap_token(acc).unwrap();
-    assert_eq!(db.peek_bootstrap_token(&t).unwrap(), Some(acc));
-    assert_eq!(db.consume_bootstrap_token(&t).unwrap(), Some(acc));
-    assert_eq!(db.consume_bootstrap_token(&t).unwrap(), None);
-    assert_eq!(db.peek_bootstrap_token(&t).unwrap(), None);
-    assert_eq!(db.consume_bootstrap_token("bogus").unwrap(), None);
+    assert_eq!(db.account_by_key("key jan").unwrap(), Some(acc));
+    assert_eq!(db.account_by_key("key nobody").unwrap(), None);
 }
 
 #[test]
-fn device_by_token_ignores_revoked() {
+fn challenges_are_single_use_and_expire() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let creds = db.create_device(acc, "mac", &[1; 32], b"wk").unwrap();
+    let c = db.create_challenge("key jan", 1000).unwrap();
+    assert_eq!(c.nonce.len(), 32);
+    assert_eq!(db.take_challenge(c.challenge_id, 1001).unwrap(), Some(("key jan".into(), c.nonce.clone())));
+    assert_eq!(db.take_challenge(c.challenge_id, 1001).unwrap(), None);
+    let late = db.create_challenge("key jan", 1000).unwrap();
+    assert_eq!(db.take_challenge(late.challenge_id, 1000 + 120).unwrap(), None, "120 s to answer");
+    // old challenges are dropped when new ones are issued
+    let stale = db.create_challenge("key jan", 1000).unwrap();
+    db.create_challenge("key jan", 5000).unwrap();
+    assert_eq!(db.take_challenge(stale.challenge_id, 0).unwrap(), None);
+    assert_ne!(db.create_challenge("k", 0).unwrap().nonce, db.create_challenge("k", 0).unwrap().nonce);
+}
+
+#[test]
+fn device_login_and_revoke() {
+    let db = db();
+    let acc = account(&db, "jan");
+    let creds = db.login_device(acc, "mac", None).unwrap();
     let row = db.device_by_token(&creds.token).unwrap().unwrap();
-    assert_eq!((row.id, row.account_id), (creds.device_id, acc));
-    assert_eq!(db.device_keyring(creds.device_id).unwrap(), Some(b"wk".to_vec()));
+    assert_eq!((row.id, row.account_id, row.name.as_str()), (creds.device_id, acc, "mac"));
     db.touch_device(creds.device_id, 42).unwrap();
     let list = db.list_devices(acc).unwrap();
-    assert_eq!(list.len(), 1);
-    assert_eq!((list[0].name.as_str(), list[0].last_seen, list[0].revoked), ("mac", Some(42), false));
+    assert_eq!((list.len(), list[0].name.as_str(), list[0].last_seen, list[0].revoked), (1, "mac", Some(42), false));
     assert!(db.revoke_device(acc, creds.device_id).unwrap());
     assert!(!db.revoke_device(Uuid::new_v4(), creds.device_id).unwrap());
     assert!(db.device_by_token(&creds.token).unwrap().is_none());
     assert!(db.list_devices(acc).unwrap()[0].revoked);
+    // logging in again as that device brings it back with a new token
+    let again = db.login_device(acc, "mac2", Some(creds.device_id)).unwrap();
+    assert_eq!(again.device_id, creds.device_id);
+    assert!(db.device_by_token(&creds.token).unwrap().is_none());
+    assert_eq!(db.device_by_token(&again.token).unwrap().unwrap().name, "mac2");
+    // an id of another account is not taken over
+    let other = account(&db, "other");
+    let foreign = db.login_device(other, "x", Some(creds.device_id)).unwrap();
+    assert_ne!(foreign.device_id, creds.device_id);
+    assert_eq!(db.list_devices(acc).unwrap().len(), 1);
 }
 
 #[test]
-fn keyrings_and_recovery_update() {
+fn keyring_stored_once_per_key() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let a = db.create_device(acc, "a", &[1; 32], b"old").unwrap();
-    assert_eq!(db.get_recovery(acc).unwrap(), None);
-    db.set_recovery(acc, b"r1").unwrap();
-    assert_eq!(db.get_recovery(acc).unwrap(), Some(b"r1".to_vec()));
-    db.update_keyrings(acc, &[(a.device_id, b"new".to_vec()), (Uuid::new_v4(), b"x".to_vec())], Some(b"r2")).unwrap();
-    assert_eq!(db.device_keyring(a.device_id).unwrap(), Some(b"new".to_vec()));
-    assert_eq!(db.get_recovery(acc).unwrap(), Some(b"r2".to_vec()));
-    db.update_keyrings(acc, &[], None).unwrap();
-    assert_eq!(db.get_recovery(acc).unwrap(), Some(b"r2".to_vec()));
+    let acc = account(&db, "jan");
+    assert_eq!(db.account_keyring(acc).unwrap(), None);
+    assert!(db.store_keyring(acc, b"w1", Some(b"r1")).unwrap());
+    assert!(!db.store_keyring(acc, b"w2", Some(b"r2")).unwrap());
+    let kr = AccountKeyring { ssh_wrapped: b"w1".to_vec(), wrapped_for: "fp jan".into(), recovery_wrapped: Some(b"r1".to_vec()) };
+    assert_eq!(db.account_keyring(acc).unwrap(), Some(kr));
+    let dev = db.login_device(acc, "mac", None).unwrap();
+    db.set_account_key(acc, "key new", "fp new").unwrap();
+    assert!(db.device_by_token(&dev.token).unwrap().is_none(), "new key logs devices out");
+    assert_eq!(db.account_by_key("key jan").unwrap(), None);
+    assert_eq!(db.account_by_key("key new").unwrap(), Some(acc));
+    assert_eq!(db.account_keyring(acc).unwrap().unwrap().wrapped_for, "fp jan", "stale until rewrapped");
+    assert!(db.store_keyring(acc, b"w3", None).unwrap());
+    let kr = db.account_keyring(acc).unwrap().unwrap();
+    assert_eq!((kr.ssh_wrapped, kr.wrapped_for, kr.recovery_wrapped), (b"w3".to_vec(), "fp new".into(), Some(b"r1".to_vec())));
 }
 
 #[test]
-fn pairing_flow_and_expiry() {
+fn account_with_only_a_recovery_copy_reports_it() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let started = db.create_pairing("linux", &[2; 32], 1000).unwrap();
-    assert_eq!(started.code.len(), 8);
-    assert!(started.code.chars().all(|c| "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".contains(c)));
-    assert_eq!(db.poll_pairing(started.pairing_id, &started.secret, 1001).unwrap(), PollOutcome::Status(PairingStatus::Pending));
-    assert_eq!(db.poll_pairing(started.pairing_id, "wrong", 1001).unwrap(), PollOutcome::NotFound);
-    let info = db.pairing_by_code(&started.code.to_lowercase(), 1002).unwrap().unwrap();
-    assert_eq!((info.device_name.as_str(), info.device_pubkey), ("linux", [2; 32]));
-    let creds = db.approve_pairing(started.pairing_id, acc, b"wk", 1003).unwrap().unwrap();
-    assert!(db.approve_pairing(started.pairing_id, acc, b"wk", 1003).unwrap().is_none());
-    match db.poll_pairing(started.pairing_id, &started.secret, 1004).unwrap() {
-        PollOutcome::Status(PairingStatus::Approved { credentials, wrapped_keyring }) => {
-            assert_eq!(credentials, creds);
-            assert_eq!(wrapped_keyring, b"wk");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(db.poll_pairing(started.pairing_id, &started.secret, 1005).unwrap(), PollOutcome::Gone);
-    assert!(db.device_by_token(&creds.token).unwrap().is_some());
-
-    let late = db.create_pairing("win", &[3; 32], 1000).unwrap();
-    let expired_at = 1000 + 601;
-    assert!(db.pairing_by_code(&late.code, expired_at).unwrap().is_none());
-    assert!(db.approve_pairing(late.pairing_id, acc, b"wk", expired_at).unwrap().is_none());
-    assert_eq!(db.poll_pairing(late.pairing_id, &late.secret, expired_at).unwrap(), PollOutcome::Status(PairingStatus::Expired));
-    assert_eq!(db.poll_pairing(Uuid::new_v4(), "x", 0).unwrap(), PollOutcome::NotFound);
+    let acc = account(&db, "jan");
+    db.execute_raw("UPDATE accounts SET recovery_wrapped = x'09'").unwrap();
+    let kr = db.account_keyring(acc).unwrap().unwrap();
+    assert_eq!((kr.ssh_wrapped, kr.wrapped_for, kr.recovery_wrapped), (vec![], String::new(), Some(vec![9])));
 }
 
 #[test]
 fn projects_scoped_to_account() {
     let db = db();
-    let a = db.create_account("a").unwrap();
-    let b = db.create_account("b").unwrap();
+    let a = account(&db, "a");
+    let b = account(&db, "b");
     let p = db.create_project(a, b"m").unwrap();
     assert_eq!(db.project_account(p).unwrap(), Some(a));
     assert_eq!(db.project_account(Uuid::new_v4()).unwrap(), None);
@@ -125,7 +134,7 @@ fn projects_scoped_to_account() {
 fn migrations_reopen_keeps_data() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("spoko.db");
-    let acc = Db::open(&path).unwrap().create_account("jan").unwrap();
+    let acc = account(&Db::open(&path).unwrap(), "jan");
     assert_eq!(Db::open(&path).unwrap().account_by_name("jan").unwrap(), Some(acc));
 }
 
@@ -162,31 +171,25 @@ fn walk(p: &std::path::Path) -> Vec<String> {
 #[test]
 fn every_query_surfaces_sql_errors() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let dev = db.create_device(acc, "a", &[1; 32], b"w").unwrap();
+    let acc = account(&db, "jan");
+    let dev = db.login_device(acc, "a", None).unwrap();
     let p = db.create_project(acc, b"m").unwrap();
-    let pairing = db.create_pairing("x", &[2; 32], 0).unwrap();
-    db.execute_raw("DROP TABLE accounts; DROP TABLE bootstrap_tokens; DROP TABLE devices; DROP TABLE pairings; DROP TABLE projects; DROP TABLE pointers;").unwrap();
+    db.execute_raw("DROP TABLE accounts; DROP TABLE challenges; DROP TABLE devices; DROP TABLE projects; DROP TABLE pointers;").unwrap();
     let id = Uuid::new_v4();
-    assert!(db.create_account("b").is_err());
+    assert!(db.create_account("b", "k", "f").is_err());
     assert!(db.account_by_name("b").is_err());
-    assert!(db.issue_bootstrap_token(acc).is_err());
-    assert!(db.peek_bootstrap_token("t").is_err());
-    assert!(db.consume_bootstrap_token("t").is_err());
-    assert!(db.set_recovery(acc, b"r").is_err());
-    assert!(db.get_recovery(acc).is_err());
-    assert!(db.create_device(acc, "a", &[1; 32], b"w").is_err());
+    assert!(db.account_by_key("k").is_err());
+    assert!(db.set_account_key(acc, "k", "f").is_err());
+    assert!(db.create_challenge("k", 0).is_err());
+    assert!(db.take_challenge(id, 0).is_err());
+    assert!(db.login_device(acc, "a", None).is_err());
+    assert!(db.login_device(acc, "a", Some(dev.device_id)).is_err());
+    assert!(db.account_keyring(acc).is_err());
+    assert!(db.store_keyring(acc, b"w", None).is_err());
     assert!(db.device_by_token(&dev.token).is_err());
     assert!(db.touch_device(id, 1).is_err());
     assert!(db.list_devices(acc).is_err());
     assert!(db.revoke_device(acc, id).is_err());
-    assert!(db.device_keyring(id).is_err());
-    assert!(db.update_keyrings(acc, &[(id, vec![])], None).is_err());
-    assert!(db.update_keyrings(acc, &[], Some(b"r")).is_err());
-    assert!(db.create_pairing("x", &[2; 32], 0).is_err());
-    assert!(db.pairing_by_code("AAAA", 0).is_err());
-    assert!(db.approve_pairing(pairing.pairing_id, acc, b"w", 0).is_err());
-    assert!(db.poll_pairing(pairing.pairing_id, &pairing.secret, 0).is_err());
     assert!(db.create_project(acc, b"m").is_err());
     assert!(db.list_projects(acc).is_err());
     assert!(db.project_account(p).is_err());
@@ -195,28 +198,21 @@ fn every_query_surfaces_sql_errors() {
 }
 
 #[test]
-fn approve_fails_cleanly_when_device_insert_fails() {
+fn partial_failures_surface() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let pairing = db.create_pairing("x", &[2; 32], 0).unwrap();
-    db.execute_raw("DROP TABLE devices;").unwrap();
-    assert!(db.approve_pairing(pairing.pairing_id, acc, b"w", 1).is_err());
-}
-
-#[test]
-fn poll_delivery_update_failure_surfaces() {
-    let db = db();
-    let acc = db.create_account("jan").unwrap();
-    let pairing = db.create_pairing("x", &[2; 32], 0).unwrap();
-    db.approve_pairing(pairing.pairing_id, acc, b"w", 1).unwrap().unwrap();
-    db.execute_raw("CREATE TRIGGER no_update BEFORE UPDATE ON pairings BEGIN SELECT RAISE(FAIL, 'ro'); END;").unwrap();
-    assert!(db.poll_pairing(pairing.pairing_id, &pairing.secret, 2).is_err());
+    let acc = account(&db, "jan");
+    db.execute_raw("CREATE TRIGGER no_revoke BEFORE UPDATE ON devices BEGIN SELECT RAISE(FAIL, 'ro'); END;").unwrap();
+    db.login_device(acc, "a", None).unwrap();
+    assert!(db.set_account_key(acc, "k2", "f2").is_err(), "logging devices out failed");
+    assert_eq!(db.account_by_key("key jan").unwrap(), Some(acc), "rolled back");
+    db.execute_raw("CREATE TRIGGER no_ins BEFORE INSERT ON challenges BEGIN SELECT RAISE(FAIL, 'ro'); END;").unwrap();
+    assert!(db.create_challenge("k", 0).is_err());
 }
 
 #[test]
 fn cas_write_failure_surfaces() {
     let db = db();
-    let acc = db.create_account("jan").unwrap();
+    let acc = account(&db, "jan");
     let p = db.create_project(acc, b"m").unwrap();
     db.execute_raw("CREATE TRIGGER no_ins BEFORE INSERT ON pointers BEGIN SELECT RAISE(FAIL, 'ro'); END;").unwrap();
     assert!(db.cas_pointer(p, "h", None, b"v").is_err());

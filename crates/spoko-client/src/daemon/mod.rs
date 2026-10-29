@@ -59,7 +59,7 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     let lock_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock"))?;
     let mut lock = fd_lock::RwLock::new(lock_file);
     let _guard = lock.try_write().map_err(|_| ClientError::Other("spoko daemon is already running for this SPOKO_HOME".into()))?;
-    let identity = Identity::load(home)?;
+    let identity = Identity::load(home, None)?;
     let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
     let prompts = Arc::new(PromptTracker { inner: opts.notifier.clone(), prompts: Mutex::new(BTreeMap::new()) });
     let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), prompts.clone());

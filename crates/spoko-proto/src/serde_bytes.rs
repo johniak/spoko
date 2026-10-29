@@ -13,19 +13,6 @@ pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error>
     STANDARD.decode(s).map_err(serde::de::Error::custom)
 }
 
-pub mod key32 {
-    use serde::{Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(bytes: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
-        super::serialize(bytes, s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 32], D::Error> {
-        let v = super::deserialize(d)?;
-        v.try_into().map_err(|_| serde::de::Error::custom("expected 32 bytes"))
-    }
-}
-
 pub mod opt {
     use serde::{Deserialize, Deserializer, Serializer};
 

@@ -143,8 +143,8 @@ fn failed_sync_request_reports_the_error_and_status_stays_offline() {
     let project = ea.project_id;
     let r = Running::start(ea, LONG);
     let synced_at = r.status().last_sync;
-    let mut idb = Identity::load(&b.home).unwrap();
-    account::revoke_device(&mut idb, &b.home, a.ctx.device_id).unwrap();
+    let idb = Identity::load(&b.home, None).unwrap();
+    account::remove_device(&idb, a.ctx.device_id).unwrap();
     a.write("x", "2");
     let msg = error_text(r.ask(Request::Sync { project }));
     assert_eq!(msg, "unauthorized (device revoked or token invalid)");

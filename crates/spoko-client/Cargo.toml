@@ -31,6 +31,7 @@ rand = "0.8"
 tempfile = "3.27.0"
 spoko-client = { path = ".", features = ["test-util"] }
 spoko-server = { path = "../spoko-server", features = ["test-util"] }
+spoko-crypto = { path = "../spoko-crypto", features = ["test-util"] }
 
 [features]
 test-util = []

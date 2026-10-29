@@ -13,17 +13,8 @@ fn agent() -> ureq::Agent {
     ureq::Agent::config_builder().http_status_as_error(false).build().into()
 }
 
-fn device(srv: &TestServer, account: &str) -> DeviceCredentials {
-    let token = srv.bootstrap_token(account);
-    let body = json!({"device_name":"d","device_pubkey":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","wrapped_keyring":"AQ=="});
-    agent()
-        .post(format!("{}/v1/devices/bootstrap", srv.url))
-        .header("Authorization", format!("Bearer {token}"))
-        .send_json(body)
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap()
+fn device(srv: &TestServer, key: &str) -> spoko_server::db::DeviceLogin {
+    srv.login(key, "d")
 }
 
 fn create_project(srv: &TestServer, token: &str) -> Uuid {
@@ -88,8 +79,8 @@ fn ws_requires_auth() {
 #[test]
 fn pointer_change_notifies_other_device() {
     let srv = spawn_test_server();
-    let a = device(&srv, "jan");
-    let b = device(&srv, "jan");
+    let a = device(&srv, "id_ed25519");
+    let b = device(&srv, "id_ed25519");
     let p = create_project(&srv, &a.token);
     let mut wb = connect(&srv, &b.token);
     let _ = next_event(&mut wb); // own presence
@@ -100,8 +91,8 @@ fn pointer_change_notifies_other_device() {
 #[test]
 fn message_not_echoed_to_sender() {
     let srv = spawn_test_server();
-    let a = device(&srv, "jan");
-    let b = device(&srv, "jan");
+    let a = device(&srv, "id_ed25519");
+    let b = device(&srv, "id_ed25519");
     let p = create_project(&srv, &a.token);
     let mut wa = connect(&srv, &a.token);
     let _ = next_event(&mut wa);
@@ -123,9 +114,9 @@ fn message_not_echoed_to_sender() {
 #[test]
 fn other_account_events_are_isolated() {
     let srv = spawn_test_server();
-    let a = device(&srv, "a");
-    let b = device(&srv, "b");
-    let b2 = device(&srv, "b");
+    let a = device(&srv, "id_ed25519");
+    let b = device(&srv, "other_ed25519");
+    let b2 = device(&srv, "other_ed25519");
     let pa = create_project(&srv, &a.token);
     let pb = create_project(&srv, &b.token);
     let mut wb = connect(&srv, &b.token);
@@ -138,8 +129,8 @@ fn other_account_events_are_isolated() {
 #[test]
 fn presence_reflects_ws_connections() {
     let srv = spawn_test_server();
-    let a = device(&srv, "jan");
-    let b = device(&srv, "jan");
+    let a = device(&srv, "id_ed25519");
+    let b = device(&srv, "id_ed25519");
     let p = create_project(&srv, &a.token);
     let presence = |token: &str| -> Presence {
         agent()

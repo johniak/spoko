@@ -47,14 +47,10 @@ impl World {
         let base = self.tmp.path().join(name);
         let home = base.join("spoko-home");
         std::fs::create_dir_all(&home).unwrap();
-        let (id, rk) = account::login_bootstrap(
-            &home,
-            &self.srv.url,
-            &self.srv.bootstrap_token("jan"),
-            name,
-            self.rk.as_ref(),
-        )
-        .unwrap();
+        // every machine of the account has the same SSH key
+        let key = spoko_crypto::test_util::key_path("id_ed25519");
+        self.srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
+        let (id, rk) = account::login(&home, &self.srv.url, &key, name, None, None).unwrap();
         if self.rk.is_none() {
             self.rk = rk;
         }

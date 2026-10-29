@@ -1,6 +1,7 @@
 use serde_json::{Value, json};
 use spoko_crypto::ObjectId;
 use spoko_proto::*;
+use spoko_crypto::test_util;
 use spoko_server::test_util::{TestServer, spawn_test_server};
 use ureq::Agent;
 use uuid::Uuid;
@@ -54,70 +55,148 @@ impl Http {
     }
 }
 
-fn bootstrap(srv: &TestServer, account: &str, name: &str) -> DeviceCredentials {
-    let token = srv.bootstrap_token(account);
-    let req = BootstrapRequest {
-        device_name: name.into(),
-        device_pubkey: [1; 32],
-        wrapped_keyring: vec![1, 2],
-        recovery_wrapped_keyring: Some(vec![9]),
-    };
-    let (s, v) = Http::new(srv, Some(&token)).json("POST", "/devices/bootstrap", serde_json::to_value(req).unwrap());
+/// Logs a device in with a test SSH key (the account is created for the key if needed).
+fn login(srv: &TestServer, key: &str, device: &str) -> LoginResponse {
+    let k = test_util::key(key);
+    srv.create_account(key, &k);
+    let anon = Http::new(srv, None);
+    let (s, v) = anon.json("POST", "/auth/challenge", json!({"public_key": k.public_openssh()}));
+    assert_eq!(s, 200, "{v}");
+    let c: Challenge = serde_json::from_value(v).unwrap();
+    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), device_name: device.into(), device_id: None };
+    let (s, v) = anon.json("POST", "/auth/login", serde_json::to_value(req).unwrap());
     assert_eq!(s, 200, "{v}");
     serde_json::from_value(v).unwrap()
 }
 
+fn challenge(srv: &TestServer, key: &str) -> Challenge {
+    let public = test_util::key(key).public_openssh();
+    serde_json::from_value(Http::new(srv, None).json("POST", "/auth/challenge", json!({"public_key": public})).1).unwrap()
+}
+
+fn try_login(srv: &TestServer, c: &Challenge, signature: String) -> u16 {
+    let req = LoginRequest { challenge_id: c.challenge_id, signature, device_name: "x".into(), device_id: None };
+    Http::new(srv, None).json("POST", "/auth/login", serde_json::to_value(req).unwrap()).0
+}
+
 #[test]
-fn bootstrap_then_authenticated_request() {
+fn login_with_signed_challenge() {
     let srv = spawn_test_server();
-    let creds = bootstrap(&srv, "jan", "mac");
+    let creds = login(&srv, "id_ed25519", "mac");
+    assert_eq!(creds.keyring, None, "a new account has no keyring yet");
     let (s, body) = Http::new(&srv, Some(&creds.token)).get("/devices");
     assert_eq!(s, 200);
     let devices: Vec<DeviceInfo> = serde_json::from_slice(&body).unwrap();
     assert_eq!(devices.len(), 1);
     assert_eq!(devices[0].name, "mac");
     assert!(devices[0].last_seen.is_some());
-    let (s, body) = Http::new(&srv, Some(&creds.token)).get("/devices/me/keyring");
-    assert_eq!(s, 200);
-    let wk: WrappedKeyring = serde_json::from_slice(&body).unwrap();
-    assert_eq!(wk.wrapped_keyring, vec![1, 2]);
     assert_eq!(Http::new(&srv, None).get("/devices").0, 401);
     assert_eq!(Http::new(&srv, Some("bogus")).get("/devices").0, 401);
+    // every key type works
+    for key in ["id_ecdsa", "id_rsa"] {
+        assert!(!login(&srv, key, "linux").token.is_empty());
+    }
 }
 
 #[test]
-fn bootstrap_token_is_single_use_and_required() {
+fn second_login_same_key_same_account_new_device() {
     let srv = spawn_test_server();
-    let token = srv.bootstrap_token("jan");
-    let req = json!({"device_name":"a","device_pubkey":base64_key(),"wrapped_keyring":"AQ=="});
-    assert_eq!(Http::new(&srv, Some(&token)).json("POST", "/devices/bootstrap", req.clone()).0, 200);
-    assert_eq!(Http::new(&srv, Some(&token)).json("POST", "/devices/bootstrap", req.clone()).0, 401);
-    assert_eq!(Http::new(&srv, None).json("POST", "/devices/bootstrap", req).0, 401);
-}
-
-fn base64_key() -> String {
-    "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".into()
+    let a = login(&srv, "id_ed25519", "mac");
+    let b = login(&srv, "id_ed25519", "linux");
+    assert_eq!(a.account_id, b.account_id);
+    assert_ne!(a.device_id, b.device_id);
+    // logging in again as a known device keeps its id and replaces its token
+    let k = test_util::key("id_ed25519");
+    let c = challenge(&srv, "id_ed25519");
+    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), device_name: "mac2".into(), device_id: Some(a.device_id) };
+    let again: LoginResponse = serde_json::from_value(Http::new(&srv, None).json("POST", "/auth/login", serde_json::to_value(req).unwrap()).1).unwrap();
+    assert_eq!(again.device_id, a.device_id);
+    assert_eq!(Http::new(&srv, Some(&a.token)).get("/devices").0, 401, "old token replaced");
+    assert_eq!(Http::new(&srv, Some(&again.token)).get("/devices").0, 200);
 }
 
 #[test]
-fn recovery_requires_bootstrap_token() {
+fn challenge_single_use_and_bound_to_key() {
     let srv = spawn_test_server();
-    let creds = bootstrap(&srv, "jan", "mac");
-    assert_eq!(Http::new(&srv, Some(&creds.token)).get("/account/recovery").0, 401);
-    let fresh = srv.bootstrap_token("jan");
-    let (s, body) = Http::new(&srv, Some(&fresh)).get("/account/recovery");
-    assert_eq!(s, 200);
-    let blob: RecoveryBlob = serde_json::from_slice(&body).unwrap();
-    assert_eq!(blob.recovery_wrapped_keyring, vec![9]);
-    let other = srv.bootstrap_token("nobody-has-recovery");
-    assert_eq!(Http::new(&srv, Some(&other)).get("/account/recovery").0, 404);
+    login(&srv, "id_ed25519", "mac");
+    let k = test_util::key("id_ed25519");
+    let c = challenge(&srv, "id_ed25519");
+    let sig = k.sign(&c.nonce).unwrap();
+    assert_eq!(try_login(&srv, &c, sig.clone()), 200);
+    assert_eq!(try_login(&srv, &c, sig), 401, "used up");
+    // a challenge issued for another key cannot be answered with this one
+    let other = challenge(&srv, "other_ed25519");
+    assert_eq!(try_login(&srv, &other, k.sign(&other.nonce).unwrap()), 401);
+    // nor with a signature of something else
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(b"other").unwrap()), 401);
+    let bad = Challenge { challenge_id: Uuid::new_v4(), nonce: vec![] };
+    assert_eq!(try_login(&srv, &bad, "x".into()), 401);
+}
+
+#[test]
+fn unknown_key_gets_a_challenge_but_no_login() {
+    let srv = spawn_test_server();
+    let k = test_util::key("other_ed25519");
+    let c = challenge(&srv, "other_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(&c.nonce).unwrap()), 401);
+    assert_eq!(Http::new(&srv, None).json("POST", "/auth/challenge", json!({"public_key": "ssh-ed25519 nope"})).0, 400);
+}
+
+#[test]
+fn initial_keyring_only_once() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    let h = Http::new(&srv, Some(&a.token));
+    assert_eq!(h.get("/account/keyring").0, 404);
+    let kr = json!({"ssh_wrapped": "AQI=", "recovery_wrapped": "CQ=="});
+    assert_eq!(h.json("PUT", "/account/keyring", kr.clone()).0, 204);
+    assert_eq!(h.json("PUT", "/account/keyring", kr).0, 409, "already wrapped for this key");
+    let got: AccountKeyring = serde_json::from_slice(&h.get("/account/keyring").1).unwrap();
+    assert_eq!(got.ssh_wrapped, vec![1, 2]);
+    assert_eq!(got.recovery_wrapped, Some(vec![9]));
+    assert_eq!(got.wrapped_for, test_util::key("id_ed25519").fingerprint());
+    // the next machine gets it at login
+    assert_eq!(login(&srv, "id_ed25519", "linux").keyring, Some(got));
+}
+
+#[test]
+fn replaced_key_may_store_a_new_keyring_keeping_recovery() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    let h = Http::new(&srv, Some(&a.token));
+    assert_eq!(h.json("PUT", "/account/keyring", json!({"ssh_wrapped": "AQI=", "recovery_wrapped": "CQ=="})).0, 204);
+    let other = test_util::key("other_ed25519");
+    srv.state.db.set_account_key(a.account_id, &other.public_openssh(), &other.fingerprint()).unwrap();
+    assert_eq!(h.get("/account/keyring").0, 401, "devices are logged out");
+    let b = login(&srv, "other_ed25519", "mac");
+    assert_eq!(b.account_id, a.account_id);
+    let stale = b.keyring.unwrap();
+    assert_ne!(stale.wrapped_for, other.fingerprint(), "still wrapped for the old key");
+    let hb = Http::new(&srv, Some(&b.token));
+    assert_eq!(hb.json("PUT", "/account/keyring", json!({"ssh_wrapped": "Bw=="})).0, 204);
+    let got: AccountKeyring = serde_json::from_slice(&hb.get("/account/keyring").1).unwrap();
+    assert_eq!((got.ssh_wrapped, got.recovery_wrapped, got.wrapped_for), (vec![7], Some(vec![9]), other.fingerprint()));
+    assert_eq!(try_login(&srv, &challenge(&srv, "id_ed25519"), test_util::key("id_ed25519").sign(b"x").unwrap()), 401);
+}
+
+#[test]
+fn pairing_and_bootstrap_routes_gone() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    let h = Http::new(&srv, Some(&a.token));
+    for path in ["/pairing/start", "/devices/bootstrap"] {
+        // `/devices/{id}` only takes DELETE
+        assert!(matches!(h.json("POST", path, json!({})).0, 404 | 405), "{path}");
+    }
+    assert_eq!(h.get("/account/recovery").0, 404);
 }
 
 #[test]
 fn revoked_device_gets_401() {
     let srv = spawn_test_server();
-    let a = bootstrap(&srv, "jan", "a");
-    let b = bootstrap(&srv, "jan", "b");
+    let a = login(&srv, "id_ed25519", "a");
+    let b = login(&srv, "id_ed25519", "b");
     let ha = Http::new(&srv, Some(&a.token));
     assert_eq!(ha.delete(&format!("/devices/{}", b.device_id)), 204);
     assert_eq!(ha.delete(&format!("/devices/{}", Uuid::new_v4())), 404);
@@ -125,57 +204,10 @@ fn revoked_device_gets_401() {
 }
 
 #[test]
-fn keyring_update_rewraps_devices() {
-    let srv = spawn_test_server();
-    let a = bootstrap(&srv, "jan", "a");
-    let h = Http::new(&srv, Some(&a.token));
-    let upd = KeyringUpdate {
-        per_device: vec![DeviceKeyring { device_id: a.device_id, wrapped_keyring: vec![7] }],
-        recovery_wrapped_keyring: Some(vec![8]),
-    };
-    assert_eq!(h.json("PUT", "/account/keyrings", serde_json::to_value(upd).unwrap()).0, 204);
-    let wk: WrappedKeyring = serde_json::from_slice(&h.get("/devices/me/keyring").1).unwrap();
-    assert_eq!(wk.wrapped_keyring, vec![7]);
-}
-
-#[test]
-fn pairing_full_flow() {
-    let srv = spawn_test_server();
-    let a = bootstrap(&srv, "jan", "a");
-    let anon = Http::new(&srv, None);
-    let (s, v) = anon.json("POST", "/pairing/start", json!({"device_name":"linux","device_pubkey":base64_key()}));
-    assert_eq!(s, 200);
-    let started: PairingStarted = serde_json::from_value(v).unwrap();
-    let poll = format!("/pairing/{}?secret={}", started.pairing_id, started.secret);
-    let (s, body) = anon.get(&poll);
-    assert_eq!(s, 200);
-    assert_eq!(serde_json::from_slice::<PairingStatus>(&body).unwrap(), PairingStatus::Pending);
-    assert_eq!(anon.get(&format!("/pairing/{}?secret=nope", started.pairing_id)).0, 404);
-
-    let ha = Http::new(&srv, Some(&a.token));
-    let (s, body) = ha.get(&format!("/pairing/by-code/{}", started.code));
-    assert_eq!(s, 200);
-    let info: PairingInfo = serde_json::from_slice(&body).unwrap();
-    assert_eq!(info.device_name, "linux");
-    assert_eq!(ha.get("/pairing/by-code/ZZZZZZZZ").0, 404);
-    assert_eq!(anon.get(&format!("/pairing/by-code/{}", started.code)).0, 401);
-    let approve = format!("/pairing/{}/approve", started.pairing_id);
-    assert_eq!(ha.json("POST", &approve, json!({"wrapped_keyring":"Bw=="})).0, 204);
-    assert_eq!(ha.json("POST", &approve, json!({"wrapped_keyring":"Bw=="})).0, 404);
-
-    let (s, body) = anon.get(&poll);
-    assert_eq!(s, 200);
-    let PairingStatus::Approved { credentials, wrapped_keyring } = serde_json::from_slice(&body).unwrap() else { panic!() };
-    assert_eq!(wrapped_keyring, vec![7]);
-    assert_eq!(anon.get(&poll).0, 410);
-    assert_eq!(Http::new(&srv, Some(&credentials.token)).get("/devices").0, 200);
-}
-
-#[test]
 fn other_account_project_is_404() {
     let srv = spawn_test_server();
-    let a = bootstrap(&srv, "a", "a");
-    let b = bootstrap(&srv, "b", "b");
+    let a = login(&srv, "id_ed25519", "a");
+    let b = login(&srv, "other_ed25519", "b");
     let ha = Http::new(&srv, Some(&a.token));
     let (s, v) = ha.json("POST", "/projects", json!({"encrypted_meta":"AQ=="}));
     assert_eq!(s, 200);
@@ -189,7 +221,7 @@ fn other_account_project_is_404() {
 }
 
 fn project(srv: &TestServer) -> (Http, Uuid) {
-    let a = bootstrap(srv, "jan", "a");
+    let a = login(srv, "id_ed25519", "a");
     let h = Http::new(srv, Some(&a.token));
     let p: ProjectInfo = serde_json::from_value(h.json("POST", "/projects", json!({"encrypted_meta":"AQ=="})).1).unwrap();
     (h, p.id)

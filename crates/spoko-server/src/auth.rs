@@ -12,13 +12,6 @@ pub struct AuthDevice {
     pub account_id: Uuid,
 }
 
-/// An unused bootstrap token (first device / recovery). Not consumed by extraction.
-#[derive(Debug, Clone)]
-pub struct BootstrapAuth {
-    pub token: String,
-    pub account_id: Uuid,
-}
-
 pub fn bearer(parts: &Parts) -> Option<&str> {
     parts.headers.get("authorization")?.to_str().ok()?.strip_prefix("Bearer ")
 }
@@ -31,16 +24,6 @@ impl FromRequestParts<Shared> for AuthDevice {
         let row = state.db.device_by_token(token)?.ok_or(ApiError::Unauthorized)?;
         state.db.touch_device(row.id, now())?;
         Ok(AuthDevice { device_id: row.id, account_id: row.account_id })
-    }
-}
-
-impl FromRequestParts<Shared> for BootstrapAuth {
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, state: &Shared) -> Result<Self, Self::Rejection> {
-        let token = bearer(parts).ok_or(ApiError::Unauthorized)?;
-        let account_id = state.db.peek_bootstrap_token(token)?.ok_or(ApiError::Unauthorized)?;
-        Ok(BootstrapAuth { token: token.to_owned(), account_id })
     }
 }
 

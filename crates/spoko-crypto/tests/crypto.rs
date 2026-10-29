@@ -72,33 +72,6 @@ fn object_id_hex_roundtrip() {
 }
 
 #[test]
-fn sealed_box_roundtrip() {
-    let kp = DeviceKeypair::generate();
-    let sealed = seal_to(&kp.public(), b"keyring");
-    assert_eq!(kp.unseal(&sealed).unwrap(), b"keyring");
-    let restored = DeviceKeypair::from_secret_bytes(kp.secret_bytes());
-    assert_eq!(restored.public(), kp.public());
-}
-
-#[test]
-fn unseal_with_other_key_fails() {
-    let kp = DeviceKeypair::generate();
-    let other = DeviceKeypair::generate();
-    let sealed = seal_to(&kp.public(), b"keyring");
-    assert!(other.unseal(&sealed).is_err());
-}
-
-#[test]
-fn fingerprint_format() {
-    let kp = DeviceKeypair::generate();
-    let fp = fingerprint(&kp.public());
-    assert_eq!(fp.len(), 14);
-    let parts: Vec<&str> = fp.split('-').collect();
-    assert_eq!(parts.len(), 3);
-    assert!(parts.iter().all(|p| p.len() == 4 && p.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())));
-}
-
-#[test]
 fn recovery_display_parse_roundtrip() {
     let rk = RecoveryKey::generate();
     let shown = rk.to_display();

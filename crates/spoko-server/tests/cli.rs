@@ -7,23 +7,33 @@ fn run(args: &[&str]) -> (Result<(), String>, String) {
 }
 
 #[test]
-fn account_create_cli_prints_token() {
+fn account_create_and_set_key() {
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().to_str().unwrap();
-    let (r, out) = run(&["spoko-server", "account", "create", "jan", "--data", data]);
+    let pub_file = spoko_crypto::test_util::key_path("id_ed25519.pub");
+    let (r, out) = run(&["spoko-server", "account", "create", "jan", "--ssh-key", pub_file.to_str().unwrap(), "--data", data]);
     r.unwrap();
-    assert!(out.contains("bootstrap token: "), "{out}");
-    let token = out.trim().rsplit(' ').next().unwrap().to_string();
-    assert!(token.len() >= 40);
+    let key = spoko_crypto::test_util::key("id_ed25519");
+    assert!(out.contains(&key.fingerprint()), "{out}");
     let db = spoko_server::db::Db::open(&dir.path().join("spoko.db")).unwrap();
-    assert!(db.peek_bootstrap_token(&token).unwrap().is_some());
+    let acc = db.account_by_key(&key.public_openssh()).unwrap().unwrap();
+    assert_eq!(db.account_by_name("jan").unwrap(), Some(acc));
+    drop(db);
 
-    let (r, out) = run(&["spoko-server", "account", "token", "jan", "--data", data]);
+    let (r, _) = run(&["spoko-server", "account", "create", "jan2", "--ssh-key", pub_file.to_str().unwrap(), "--data", data]);
+    assert_eq!(r.unwrap_err(), "this SSH key already owns an account");
+    let (r, _) = run(&["spoko-server", "account", "create", "x", "--ssh-key", "ssh-ed25519 nope", "--data", data]);
+    assert_eq!(r.unwrap_err(), "not an SSH public key: ssh-ed25519 nope");
+
+    let other = spoko_crypto::test_util::key("other_ed25519");
+    let line = std::fs::read_to_string(spoko_crypto::test_util::key_path("other_ed25519.pub")).unwrap();
+    let (r, out) = run(&["spoko-server", "account", "set-key", "jan", "--ssh-key", line.trim(), "--data", data]);
     r.unwrap();
-    assert!(out.contains("bootstrap token: "));
-    let (r, _) = run(&["spoko-server", "account", "create", "jan", "--data", data]);
-    assert!(r.is_err());
-    let (r, _) = run(&["spoko-server", "account", "token", "nobody", "--data", data]);
+    assert!(out.contains(&other.fingerprint()), "{out}");
+    let db = spoko_server::db::Db::open(&dir.path().join("spoko.db")).unwrap();
+    assert_eq!(db.account_by_key(&other.public_openssh()).unwrap(), Some(acc));
+    drop(db);
+    let (r, _) = run(&["spoko-server", "account", "set-key", "nobody", "--ssh-key", line.trim(), "--data", data]);
     assert_eq!(r.unwrap_err(), "no such account: nobody");
 }
 

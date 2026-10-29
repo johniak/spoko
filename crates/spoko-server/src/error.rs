@@ -9,8 +9,8 @@ pub enum ApiError {
     Unauthorized,
     #[error("not found")]
     NotFound,
-    #[error("gone")]
-    Gone,
+    #[error("already exists")]
+    Exists,
     #[error("bad request")]
     BadRequest,
     #[error("payload too large")]
@@ -44,7 +44,7 @@ impl IntoResponse for ApiError {
         match self {
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED.into_response(),
             ApiError::NotFound => StatusCode::NOT_FOUND.into_response(),
-            ApiError::Gone => StatusCode::GONE.into_response(),
+            ApiError::Exists => StatusCode::CONFLICT.into_response(),
             ApiError::BadRequest => StatusCode::BAD_REQUEST.into_response(),
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE.into_response(),
             ApiError::Conflict(p) => (StatusCode::CONFLICT, Json(p)).into_response(),

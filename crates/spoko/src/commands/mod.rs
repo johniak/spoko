@@ -47,7 +47,10 @@ impl Ctx {
     }
 
     pub fn identity(&self) -> Res<Identity> {
-        Identity::load(&self.home).map_err(|_| "ten komputer nie jest zalogowany (spoko login <serwer>)".into())
+        if !self.home.join(spoko_client::account::IDENTITY_FILE).exists() {
+            return err("ten komputer nie jest zalogowany (spoko login <serwer>)");
+        }
+        Ok(Identity::load(&self.home, None)?)
     }
 
     pub fn device_ctx(&self, id: &Identity) -> DeviceCtx {
@@ -108,7 +111,7 @@ impl Ctx {
 
 pub fn run(ctx: &mut Ctx, cmd: Cmd, out: &mut dyn Write) -> Res<()> {
     match cmd {
-        Cmd::Login { server, token, recovery_key, name } => account::login(ctx, &server, token.as_deref(), recovery_key.as_deref(), name, out),
+        Cmd::Login { server, key, recovery_key, name } => account::login(ctx, &server, key, recovery_key.as_deref(), name, out),
         Cmd::Device { cmd } => account::device(ctx, cmd, out),
         Cmd::Init { path, name } => project::init(ctx, path, name, out),
         Cmd::Clone { project, path } => project::clone(ctx, &project, path, out),

@@ -19,11 +19,6 @@ pub struct ApiClient {
     agent: Agent,
 }
 
-pub enum PollResult {
-    Status(PairingStatus),
-    Gone,
-}
-
 const MAX_BODY: u64 = (MAX_BATCH_BYTES as u64) * 2;
 
 impl ApiClient {
@@ -124,31 +119,29 @@ impl ApiClient {
         }
     }
 
-    pub fn bootstrap(
-        &self,
-        bootstrap_token: &str,
-        req: &BootstrapRequest,
-    ) -> Result<DeviceCredentials> {
-        Self::json(&Self::expect_ok(self.send_json(
-            "POST",
-            "/devices/bootstrap",
-            req,
-            Some(bootstrap_token),
-        )?)?)
+    pub fn challenge(&self, public_key: &str) -> Result<Challenge> {
+        let req = ChallengeRequest { public_key: public_key.to_owned() };
+        Self::json(&Self::expect_ok(self.send_json("POST", "/auth/challenge", &req, None)?)?)
     }
 
-    pub fn recovery(&self, bootstrap_token: &str) -> Result<RecoveryBlob> {
-        self.get_ok("/account/recovery", Some(bootstrap_token))?
-            .ok_or_else(|| ClientError::Other("no recovery key stored for this account".into()))
+    pub fn login(&self, req: &LoginRequest) -> Result<LoginResponse> {
+        Self::json(&Self::expect_ok(self.send_json("POST", "/auth/login", req, None)?)?)
+    }
+
+    pub fn keyring(&self) -> Result<Option<AccountKeyring>> {
+        self.get_ok("/account/keyring", None)
+    }
+
+    /// `false` when the server already has a keyring wrapped for the account's current key.
+    pub fn store_keyring(&self, kr: &AccountKeyring) -> Result<bool> {
+        match self.send_json("PUT", "/account/keyring", kr, None)? {
+            (409, _) => Ok(false),
+            r => Self::expect_ok(r).map(|_| true),
+        }
     }
 
     pub fn devices(&self) -> Result<Vec<DeviceInfo>> {
         Ok(self.get_ok("/devices", None)?.unwrap_or_default())
-    }
-
-    pub fn my_keyring(&self) -> Result<WrappedKeyring> {
-        self.get_ok("/devices/me/keyring", None)?
-            .ok_or_else(|| ClientError::Server("keyring missing".into()))
     }
 
     pub fn revoke(&self, device: Uuid) -> Result<()> {
@@ -160,41 +153,6 @@ impl ApiClient {
             .call(),
         )?;
         Self::expect_ok(r).map(|_| ())
-    }
-
-    pub fn update_keyrings(&self, upd: &KeyringUpdate) -> Result<()> {
-        Self::expect_ok(self.send_json("PUT", "/account/keyrings", upd, None)?).map(|_| ())
-    }
-
-    pub fn pairing_start(&self, req: &PairingStart) -> Result<PairingStarted> {
-        Self::json(&Self::expect_ok(self.send_json(
-            "POST",
-            "/pairing/start",
-            req,
-            None,
-        )?)?)
-    }
-
-    pub fn pairing_poll(&self, id: Uuid, secret: &str) -> Result<PollResult> {
-        match self.get_raw(&format!("/pairing/{id}?secret={secret}"), None)? {
-            (410, _) => Ok(PollResult::Gone),
-            (404, _) => Err(ClientError::Other("pairing not found".into())),
-            (_, b) => Ok(PollResult::Status(Self::json(&b)?)),
-        }
-    }
-
-    pub fn pairing_by_code(&self, code: &str) -> Result<Option<PairingInfo>> {
-        self.get_ok(&format!("/pairing/by-code/{code}"), None)
-    }
-
-    pub fn pairing_approve(&self, id: Uuid, wrapped_keyring: Vec<u8>) -> Result<()> {
-        Self::expect_ok(self.send_json(
-            "POST",
-            &format!("/pairing/{id}/approve"),
-            &PairingApprove { wrapped_keyring },
-            None,
-        )?)
-        .map(|_| ())
     }
 
     pub fn create_project(&self, encrypted_meta: &[u8]) -> Result<ProjectInfo> {

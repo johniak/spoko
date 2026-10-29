@@ -7,14 +7,16 @@ mod keyring;
 #[cfg(windows)]
 mod os_glue;
 mod recovery;
-mod sealed;
+mod ssh;
+#[cfg(feature = "test-util")]
+pub mod test_util;
 
 pub use aead::{open, seal};
 pub use ids::{ObjectId, chunk_id, git_object_id, name_id};
 pub use keyfile::{read_private_file, write_private_file};
 pub use keyring::{Key32, Keyring};
 pub use recovery::RecoveryKey;
-pub use sealed::{DeviceKeypair, fingerprint, seal_to};
+pub use ssh::{SshKey, default_key_path, parse_public_key, verify_signature};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CryptoError {
@@ -26,6 +28,16 @@ pub enum CryptoError {
     Decrypt,
     #[error("invalid encoding")]
     Encoding,
+    #[error("the SSH key has a passphrase")]
+    Encrypted,
+    #[error("wrong passphrase for the SSH key")]
+    Passphrase,
+    #[error("unsupported SSH key type (use Ed25519, ECDSA or RSA)")]
+    UnsupportedKey,
+    #[error("bad signature")]
+    Signature,
+    #[error("cannot read the SSH key: {0}")]
+    Io(std::io::Error),
 }
 
 pub(crate) fn random_bytes<const N: usize>() -> [u8; N] {

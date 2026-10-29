@@ -4,97 +4,58 @@ use uuid::Uuid;
 
 use crate::serde_bytes;
 
+/// Login, step 1: the public key (`ssh-ed25519 AAAA…`) the device will sign with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BootstrapRequest {
-    pub device_name: String,
-    #[serde(with = "serde_bytes::key32")]
-    pub device_pubkey: [u8; 32],
+pub struct ChallengeRequest {
+    pub public_key: String,
+}
+
+/// A single-use nonce, valid for a short time and only for the key it was issued to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Challenge {
+    pub challenge_id: Uuid,
     #[serde(with = "serde_bytes")]
-    pub wrapped_keyring: Vec<u8>,
-    #[serde(with = "serde_bytes::opt", default)]
-    pub recovery_wrapped_keyring: Option<Vec<u8>>,
+    pub nonce: Vec<u8>,
+}
+
+/// Login, step 2: the nonce signed with the SSH key (armored sshsig, namespace `spoko`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoginRequest {
+    pub challenge_id: Uuid,
+    pub signature: String,
+    pub device_name: String,
+    /// Logging in again from a known device keeps its id.
+    #[serde(default)]
+    pub device_id: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceCredentials {
+pub struct LoginResponse {
+    pub account_id: Uuid,
     pub device_id: Uuid,
     pub token: String,
+    /// `None` until the first device stores one.
+    pub keyring: Option<AccountKeyring>,
 }
 
+/// The account keyring, wrapped with the SSH key and with the recovery key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RecoveryBlob {
+pub struct AccountKeyring {
     #[serde(with = "serde_bytes")]
-    pub recovery_wrapped_keyring: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairingStart {
-    pub device_name: String,
-    #[serde(with = "serde_bytes::key32")]
-    pub device_pubkey: [u8; 32],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairingStarted {
-    pub pairing_id: Uuid,
-    pub secret: String,
-    pub code: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum PairingStatus {
-    Pending,
-    Approved {
-        credentials: DeviceCredentials,
-        #[serde(with = "serde_bytes")]
-        wrapped_keyring: Vec<u8>,
-    },
-    Expired,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairingInfo {
-    pub pairing_id: Uuid,
-    pub device_name: String,
-    #[serde(with = "serde_bytes::key32")]
-    pub device_pubkey: [u8; 32],
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PairingApprove {
-    #[serde(with = "serde_bytes")]
-    pub wrapped_keyring: Vec<u8>,
+    pub ssh_wrapped: Vec<u8>,
+    /// Fingerprint of the SSH key `ssh_wrapped` was made with (server-filled on reads).
+    #[serde(default)]
+    pub wrapped_for: String,
+    #[serde(with = "serde_bytes::opt", default)]
+    pub recovery_wrapped: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub id: Uuid,
     pub name: String,
-    #[serde(with = "serde_bytes::key32")]
-    pub pubkey: [u8; 32],
     pub revoked: bool,
     pub last_seen: Option<i64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WrappedKeyring {
-    #[serde(with = "serde_bytes")]
-    pub wrapped_keyring: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeviceKeyring {
-    pub device_id: Uuid,
-    #[serde(with = "serde_bytes")]
-    pub wrapped_keyring: Vec<u8>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct KeyringUpdate {
-    pub per_device: Vec<DeviceKeyring>,
-    #[serde(with = "serde_bytes::opt", default)]
-    pub recovery_wrapped_keyring: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,8 +1,7 @@
 //! The spec's whole story with real `spoko` processes (CLI + daemons) on one real server.
 
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use spoko_server::test_util::spawn_test_server;
@@ -13,8 +12,13 @@ struct Machine {
 }
 
 impl Machine {
+    /// The machine has the account's SSH key at `~/.ssh/id_ed25519`, as every machine of the user.
     fn new(name: &'static str) -> Machine {
-        Machine { dir: tempfile::tempdir().unwrap(), name }
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = dir.path().join("h/.ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519"), ssh.join("id_ed25519")).unwrap();
+        Machine { dir, name }
     }
     fn p(&self, rel: &str) -> PathBuf {
         self.dir.path().join(rel)
@@ -81,19 +85,12 @@ fn whole_story() {
     let (a, b) = (Machine::new("mac"), Machine::new("linux"));
     let tmp = a.p("");
 
-    // 1. login A with a bootstrap token; B pairs through A
-    let out = a.ok(&["login", &srv.url, "--token", &srv.bootstrap_token("jan")], &tmp);
-    assert!(out.contains("Klucz odzyskiwania"));
-    let mut pairing = b.cmd(&["login", &srv.url], &tmp).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    let mut lines = BufReader::new(pairing.stdout.take().unwrap()).lines();
-    let code = loop {
-        let l = lines.next().expect("pairing output").unwrap();
-        if let Some(c) = l.strip_prefix("Kod parowania: ") {
-            break c.trim().to_owned();
-        }
-    };
-    assert!(a.ok(&["device", "approve", &code, "--yes"], &tmp).contains("Zatwierdzono"));
-    assert!(pairing.wait().unwrap().success());
+    // 1. the server admin creates the account for the user's SSH key; both machines log in with it
+    srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
+    let out = a.ok(&["login", &srv.url], &tmp);
+    assert!(out.contains("Klucz odzyskiwania") && out.contains("SHA256:"), "{out}");
+    let out = b.ok(&["login", &srv.url], &tmp);
+    assert!(!out.contains("Klucz odzyskiwania"), "one recovery key per account");
     assert!(b.ok(&["device", "list"], &tmp).contains("mac"));
 
     // 2. project on A: git repo, .env synced via include, node_modules not, a watch hook
@@ -174,10 +171,13 @@ fn whole_story() {
     assert_eq!(read(&pa.join("main.rs")).unwrap(), "fn main() { /* A + B */ }\n");
     assert!(a.ok(&["resolve"], &pa).contains("Brak konfliktów"));
 
-    // 10. A revokes B: B loses access, A gets a new recovery key
-    assert!(a.ok(&["device", "revoke", "linux"], &tmp).contains("Klucz odzyskiwania"));
+    // 10. A logs B out: B stops syncing until it logs in again with the key
+    assert_eq!(a.ok(&["device", "remove", "linux"], &tmp), "Wylogowano: linux\n");
     let (ok, out) = b.run(&["sync"], &pb);
-    assert!(!ok, "revoked device must not sync: {out}");
+    assert!(!ok, "a logged-out device must not sync: {out}");
     std::fs::write(pa.join("after.txt"), "x").unwrap();
-    assert!(a.ok(&["sync"], &pa).contains("wysłano"), "A keeps working with the rotated key");
+    assert!(a.ok(&["sync"], &pa).contains("wysłano"), "A keeps working");
+    b.ok(&["login", &srv.url], &tmp);
+    b.ok(&["sync"], &pb);
+    assert_eq!(read(&pb.join("after.txt")).unwrap(), "x");
 }

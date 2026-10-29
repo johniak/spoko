@@ -34,15 +34,20 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum AccountCmd {
-    /// Create an account and print a bootstrap token for its first device.
+    /// Create an account owned by an SSH key (every machine with that key can log in).
     Create {
         name: String,
+        /// Public key: `ssh-ed25519 AAAA…` or a path to the `.pub` file.
+        #[arg(long)]
+        ssh_key: String,
         #[arg(long, default_value = "./spoko-data")]
         data: PathBuf,
     },
-    /// Print a new bootstrap token (add a device without pairing, or recover).
-    Token {
+    /// Replace the account's SSH key (lost or leaked key); logs every device out.
+    SetKey {
         name: String,
+        #[arg(long)]
+        ssh_key: String,
         #[arg(long, default_value = "./spoko-data")]
         data: PathBuf,
     },
@@ -58,19 +63,31 @@ pub fn run_cli(args: impl IntoIterator<Item = String>, out: &mut dyn Write) -> C
         Cmd::Serve { data, listen } => serve(&data, &listen, async {
             let _ = tokio::signal::ctrl_c().await;
         }),
-        Cmd::Account { cmd: AccountCmd::Create { name, data } } => {
+        Cmd::Account { cmd: AccountCmd::Create { name, ssh_key, data } } => {
+            let (key, fp) = public_key(&ssh_key)?;
             let db = open_db(&data)?;
-            let acc = db.create_account(&name)?;
-            writeln!(out, "account {name} created\nbootstrap token: {}", db.issue_bootstrap_token(acc)?)?;
+            if db.account_by_key(&key)?.is_some() {
+                return Err("this SSH key already owns an account".into());
+            }
+            db.create_account(&name, &key, &fp)?;
+            writeln!(out, "account {name} created for {fp}\nlog in on each machine with: spoko login <server url>")?;
             Ok(())
         }
-        Cmd::Account { cmd: AccountCmd::Token { name, data } } => {
+        Cmd::Account { cmd: AccountCmd::SetKey { name, ssh_key, data } } => {
+            let (key, fp) = public_key(&ssh_key)?;
             let db = open_db(&data)?;
             let acc = db.account_by_name(&name)?.ok_or_else(|| format!("no such account: {name}"))?;
-            writeln!(out, "bootstrap token: {}", db.issue_bootstrap_token(acc)?)?;
+            db.set_account_key(acc, &key, &fp)?;
+            writeln!(out, "account {name} now uses {fp}; devices were logged out\nlog in with the new key and: spoko login --recovery-key …")?;
             Ok(())
         }
     }
+}
+
+/// A key line, or a path to a `.pub` file.
+fn public_key(arg: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
+    let line = if Path::new(arg).is_file() { std::fs::read_to_string(arg)? } else { arg.to_owned() };
+    spoko_crypto::parse_public_key(&line).map_err(|_| format!("not an SSH public key: {}", line.trim()).into())
 }
 
 /// Runs the server until `shutdown` resolves.

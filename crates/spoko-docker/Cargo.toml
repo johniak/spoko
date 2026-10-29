@@ -26,3 +26,4 @@ rand = "0.8"
 spoko-client = { path = "../spoko-client", features = ["test-util"] }
 spoko-proto = { path = "../spoko-proto" }
 spoko-server = { path = "../spoko-server", features = ["test-util"] }
+spoko-crypto = { path = "../spoko-crypto", features = ["test-util"] }

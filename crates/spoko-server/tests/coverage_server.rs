@@ -4,8 +4,7 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use serde_json::json;
-use spoko_proto::{DeviceCredentials, ServerEvent};
+use spoko_proto::ServerEvent;
 use spoko_server::blobstore::BlobStore;
 use spoko_server::test_util::spawn_test_server;
 use tungstenite::client::IntoClientRequest;
@@ -39,23 +38,14 @@ fn read_event(ws: &mut Ws) -> ServerEvent {
 #[test]
 fn lagging_socket_skips_missed_events_and_stays_open() {
     let srv = spawn_test_server();
-    let token = srv.bootstrap_token("jan");
-    let body = json!({"device_name":"d","device_pubkey":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","wrapped_keyring":"AQ=="});
-    let creds: DeviceCredentials = agent()
-        .post(format!("{}/v1/devices/bootstrap", srv.url))
-        .header("Authorization", format!("Bearer {token}"))
-        .send_json(body)
-        .unwrap()
-        .body_mut()
-        .read_json()
-        .unwrap();
+    let creds = srv.login("id_ed25519", "d");
     let mut req = format!("ws://{}/v1/events", srv.addr).into_client_request().unwrap();
     req.headers_mut().insert("Authorization", format!("Bearer {}", creds.token).parse().unwrap());
     let (mut ws, _) = tungstenite::connect(req).unwrap();
     if let MaybeTlsStream::Plain(s) = ws.get_ref() {
         s.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
     }
-    let account = srv.state.db.account_by_name("jan").unwrap().unwrap();
+    let account = srv.state.db.account_by_name("id_ed25519").unwrap().unwrap();
     let project = Uuid::new_v4();
     // the client reads nothing while far more events than the channel holds (1024) are published
     let published = 20_000u32;

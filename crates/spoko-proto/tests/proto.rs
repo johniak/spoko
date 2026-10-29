@@ -38,14 +38,6 @@ fn pointer_put_serde_roundtrip() {
 }
 
 #[test]
-fn pubkey_serialized_as_base64_and_length_checked() {
-    let s = PairingStart { device_name: "mac".into(), device_pubkey: [9u8; 32] };
-    let json = serde_json::to_string(&s).unwrap();
-    assert_eq!(serde_json::from_str::<PairingStart>(&json).unwrap(), s);
-    assert!(serde_json::from_str::<PairingStart>(r#"{"device_name":"x","device_pubkey":"AQID"}"#).is_err());
-}
-
-#[test]
 fn server_event_tagged_json() {
     let project = Uuid::nil();
     let e = ServerEvent::PointerChanged { project, name: "head".into(), version: 4 };
@@ -59,16 +51,18 @@ fn server_event_tagged_json() {
 }
 
 #[test]
-fn pairing_status_variants_roundtrip() {
-    let creds = DeviceCredentials { device_id: Uuid::nil(), token: "t".into() };
-    for s in [
-        PairingStatus::Pending,
-        PairingStatus::Expired,
-        PairingStatus::Approved { credentials: creds.clone(), wrapped_keyring: vec![1] },
-    ] {
-        let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(serde_json::from_str::<PairingStatus>(&json).unwrap(), s);
-    }
+fn login_types_roundtrip() {
+    let r = LoginResponse {
+        account_id: Uuid::nil(),
+        device_id: Uuid::nil(),
+        token: "t".into(),
+        keyring: Some(AccountKeyring { ssh_wrapped: vec![1], wrapped_for: "SHA256:x".into(), recovery_wrapped: None }),
+    };
+    assert_eq!(serde_json::from_str::<LoginResponse>(&serde_json::to_string(&r).unwrap()).unwrap(), r);
+    let c = Challenge { challenge_id: Uuid::nil(), nonce: vec![9; 32] };
+    assert_eq!(serde_json::from_str::<Challenge>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
+    let l: LoginRequest = serde_json::from_str(r#"{"challenge_id":"00000000-0000-0000-0000-000000000000","signature":"s","device_name":"mac"}"#).unwrap();
+    assert_eq!(l.device_id, None);
 }
 
 #[test]
@@ -81,16 +75,10 @@ fn constants() {
 #[test]
 fn optional_bytes_roundtrip() {
     for rec in [None, Some(vec![1u8, 2])] {
-        let r = BootstrapRequest {
-            device_name: "a".into(),
-            device_pubkey: [1; 32],
-            wrapped_keyring: vec![3],
-            recovery_wrapped_keyring: rec,
-        };
-        let json = serde_json::to_string(&r).unwrap();
-        assert_eq!(serde_json::from_str::<BootstrapRequest>(&json).unwrap(), r);
+        let k = AccountKeyring { ssh_wrapped: vec![3], wrapped_for: String::new(), recovery_wrapped: rec };
+        let json = serde_json::to_string(&k).unwrap();
+        assert_eq!(serde_json::from_str::<AccountKeyring>(&json).unwrap(), k);
     }
-    let missing: BootstrapRequest =
-        serde_json::from_str(r#"{"device_name":"a","device_pubkey":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=","wrapped_keyring":"Aw=="}"#).unwrap();
-    assert_eq!(missing.recovery_wrapped_keyring, None);
+    let missing: AccountKeyring = serde_json::from_str(r#"{"ssh_wrapped":"Aw=="}"#).unwrap();
+    assert_eq!((missing.recovery_wrapped, missing.wrapped_for), (None, String::new()));
 }

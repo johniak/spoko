@@ -15,12 +15,13 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Cmd {
-    /// Zaloguj ten komputer (z tokenem: pierwsze urządzenie / odzyskiwanie; bez: parowanie).
+    /// Zaloguj ten komputer kluczem SSH konta (domyślnie ~/.ssh/id_ed25519, id_ecdsa, id_rsa).
     Login {
         server: String,
-        // tokens are base64url and may start with '-'
-        #[arg(long, allow_hyphen_values = true)]
-        token: Option<String>,
+        /// Plik klucza prywatnego SSH.
+        #[arg(long)]
+        key: Option<PathBuf>,
+        /// Po wymianie klucza konta: otwiera dotychczasowe dane.
         #[arg(long, allow_hyphen_values = true)]
         recovery_key: Option<String>,
         #[arg(long)]
@@ -92,18 +93,9 @@ pub enum Cmd {
 
 #[derive(Subcommand)]
 pub enum DeviceCmd {
-    /// Sparuj ten komputer z kontem (zatwierdzenie na innym urządzeniu).
-    Add { server: String, #[arg(long)] name: Option<String> },
-    /// Zatwierdź parowanie kodem pokazanym na nowym urządzeniu.
-    Approve {
-        #[arg(allow_hyphen_values = true)]
-        code: String,
-        #[arg(long)]
-        yes: bool,
-    },
     List { #[arg(long)] json: bool },
-    /// Odbierz dostęp (rotuje klucz, wypisuje nowy klucz odzyskiwania).
-    Revoke { device: String },
+    /// Wyloguj urządzenie (każdy komputer z kluczem SSH może zalogować się ponownie).
+    Remove { device: String },
 }
 
 #[derive(Subcommand)]

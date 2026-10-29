@@ -44,8 +44,8 @@ struct World {
 fn world() -> World {
     let srv = spawn_test_server();
     let tmp = tempfile::tempdir().unwrap();
-    let (mac, rk) = account::login_bootstrap(&tmp.path().join("mac"), &srv.url, &srv.bootstrap_token("jan"), "mac", None).unwrap();
-    let (linux, _) = account::login_bootstrap(&tmp.path().join("linux"), &srv.url, &srv.bootstrap_token("jan"), "linux", rk.as_ref()).unwrap();
+    let (mac, _) = { srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519")); account::login(&tmp.path().join("mac"), &srv.url, &spoko_crypto::test_util::key_path("id_ed25519"), "mac", None, None) }.unwrap();
+    let (linux, _) = { srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519")); account::login(&tmp.path().join("linux"), &srv.url, &spoko_crypto::test_util::key_path("id_ed25519"), "linux", None, None) }.unwrap();
     World { _srv: srv, tmp, mac, linux }
 }
 

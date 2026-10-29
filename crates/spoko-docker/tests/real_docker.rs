@@ -67,7 +67,7 @@ fn roundtrip(mode: VolumeMode) {
     let _cleanup = Cleanup(vec![c1.clone(), c2.clone()], vec![vol.clone()]);
     let srv = spawn_test_server();
     let home = tempfile::tempdir().unwrap();
-    let (id, _) = account::login_bootstrap(home.path(), &srv.url, &srv.bootstrap_token("jan"), "ci", None).unwrap();
+    let (id, _) = { srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519")); account::login(home.path(), &srv.url, &spoko_crypto::test_util::key_path("id_ed25519"), "ci", None, None) }.unwrap();
     let api = id.api();
     let project = api.create_project(b"m").unwrap().id;
     let d = BollardApi::connect().unwrap();

@@ -21,4 +21,5 @@ uuid = { version = "1.29.0", features = ["v4"] }
 [dev-dependencies]
 assert_cmd = "2.2.2"
 spoko-server = { path = "../spoko-server", features = ["test-util"] }
+spoko-crypto = { path = "../spoko-crypto", features = ["test-util"] }
 tempfile = "3.27.0"

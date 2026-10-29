@@ -15,14 +15,18 @@ pub struct TestServer {
 }
 
 impl TestServer {
-    /// Issues a bootstrap token, creating the account if needed.
-    pub fn bootstrap_token(&self, account: &str) -> String {
+    /// Creates an account owned by `key` (an existing account of that key is returned).
+    pub fn create_account(&self, name: &str, key: &spoko_crypto::SshKey) -> uuid::Uuid {
         let db = &self.state.db;
-        let acc = match db.account_by_name(account).unwrap() {
-            Some(a) => a,
-            None => db.create_account(account).unwrap(),
-        };
-        db.issue_bootstrap_token(acc).unwrap()
+        let public = key.public_openssh();
+        db.account_by_key(&public).unwrap().unwrap_or_else(|| db.create_account(name, &public, &key.fingerprint()).unwrap())
+    }
+
+    /// A logged-in device of the account of test key `key` (see `spoko_crypto::test_util`),
+    /// made directly in the database.
+    pub fn login(&self, key: &str, device: &str) -> crate::db::DeviceLogin {
+        let acc = self.create_account(key, &spoko_crypto::test_util::key(key));
+        self.state.db.login_device(acc, device, None).unwrap()
     }
 }
 

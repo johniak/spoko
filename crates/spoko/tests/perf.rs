@@ -14,8 +14,13 @@ struct Machine {
 }
 
 impl Machine {
+    /// The machine has the account's SSH key at `~/.ssh/id_ed25519`, as every machine of the user.
     fn new(name: &'static str) -> Machine {
-        Machine { dir: tempfile::tempdir().unwrap(), name }
+        let dir = tempfile::tempdir().unwrap();
+        let ssh = dir.path().join("h/.ssh");
+        std::fs::create_dir_all(&ssh).unwrap();
+        std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519"), ssh.join("id_ed25519")).unwrap();
+        Machine { dir, name }
     }
     fn p(&self, rel: &str) -> PathBuf {
         self.dir.path().join(rel)
@@ -66,9 +71,9 @@ fn pct(v: &mut [Duration], p: f64) -> Duration {
 fn two_machines(srv: &spoko_server::test_util::TestServer) -> (Machine, Machine) {
     let (a, b) = (Machine::new("mac"), Machine::new("linux"));
     let tmp = a.p("");
-    let out = a.ok(&["login", &srv.url, "--token", &srv.bootstrap_token("jan")], &tmp);
-    let rk = out.lines().find_map(|l| l.strip_prefix("Klucz odzyskiwania: ")).unwrap().trim().to_owned();
-    b.ok(&["login", &srv.url, "--token", &srv.bootstrap_token("jan"), "--recovery-key", &rk], &tmp);
+    srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
+    a.ok(&["login", &srv.url], &tmp);
+    b.ok(&["login", &srv.url], &tmp);
     (a, b)
 }
 

@@ -5,13 +5,12 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rand::Rng;
 use rusqlite::{Connection, OptionalExtension, params};
-use spoko_proto::{DeviceCredentials, DeviceInfo, PairingInfo, PairingStarted, PairingStatus, Pointer, ProjectInfo};
+use spoko_proto::{AccountKeyring, Challenge, DeviceInfo, Pointer, ProjectInfo};
 use uuid::Uuid;
 
 pub type DbResult<T> = Result<T, rusqlite::Error>;
 
-const PAIRING_TTL_SECS: i64 = 600;
-const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const CHALLENGE_TTL_SECS: i64 = 120;
 
 const MIGRATIONS: &[&str] = &[r"
 CREATE TABLE accounts (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, recovery_wrapped BLOB);
@@ -23,6 +22,18 @@ CREATE TABLE pairings (id TEXT PRIMARY KEY, secret_hash BLOB NOT NULL, code TEXT
 CREATE TABLE projects (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, encrypted_meta BLOB NOT NULL);
 CREATE TABLE pointers (project_id TEXT NOT NULL, name TEXT NOT NULL, version INTEGER NOT NULL, value BLOB NOT NULL,
   PRIMARY KEY (project_id, name));
+", r"
+DROP TABLE pairings;
+DROP TABLE bootstrap_tokens;
+DROP TABLE devices;
+CREATE TABLE devices (id TEXT PRIMARY KEY, account_id TEXT NOT NULL, name TEXT NOT NULL,
+  token_hash BLOB NOT NULL UNIQUE, revoked INTEGER NOT NULL DEFAULT 0, last_seen INTEGER);
+ALTER TABLE accounts ADD COLUMN ssh_key TEXT;
+ALTER TABLE accounts ADD COLUMN ssh_fingerprint TEXT;
+ALTER TABLE accounts ADD COLUMN ssh_wrapped BLOB;
+ALTER TABLE accounts ADD COLUMN wrapped_for TEXT;
+CREATE UNIQUE INDEX accounts_ssh_key ON accounts (ssh_key);
+CREATE TABLE challenges (id TEXT PRIMARY KEY, ssh_key TEXT NOT NULL, nonce BLOB NOT NULL, expires_at INTEGER NOT NULL);
 "];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,12 +43,11 @@ pub struct DeviceRow {
     pub name: String,
 }
 
+/// A device token, shown once.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PollOutcome {
-    Status(PairingStatus),
-    /// Credentials were already handed out once.
-    Gone,
-    NotFound,
+pub struct DeviceLogin {
+    pub device_id: Uuid,
+    pub token: String,
 }
 
 pub struct Db {
@@ -56,9 +66,6 @@ fn uuid(s: String) -> Uuid {
     Uuid::parse_str(&s).expect("uuid column")
 }
 
-fn key32(v: Vec<u8>) -> [u8; 32] {
-    v.try_into().expect("32-byte key column")
-}
 
 impl Db {
     pub fn open(path: &Path) -> DbResult<Db> {
@@ -89,9 +96,13 @@ impl Db {
         self.conn.lock().expect("db mutex poisoned")
     }
 
-    pub fn create_account(&self, name: &str) -> DbResult<Uuid> {
+    /// `ssh_key` is the comment-free public key line (see `spoko_crypto::parse_public_key`).
+    pub fn create_account(&self, name: &str, ssh_key: &str, fingerprint: &str) -> DbResult<Uuid> {
         let id = Uuid::new_v4();
-        self.conn().execute("INSERT INTO accounts (id, name) VALUES (?1, ?2)", params![id.to_string(), name])?;
+        self.conn().execute(
+            "INSERT INTO accounts (id, name, ssh_key, ssh_fingerprint) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), name, ssh_key, fingerprint],
+        )?;
         Ok(id)
     }
 
@@ -102,59 +113,97 @@ impl Db {
             .map(|o| o.map(uuid))
     }
 
-    pub fn issue_bootstrap_token(&self, account: Uuid) -> DbResult<String> {
-        let token = new_token();
-        self.conn().execute(
-            "INSERT INTO bootstrap_tokens (hash, account_id) VALUES (?1, ?2)",
-            params![hash(&token), account.to_string()],
-        )?;
-        Ok(token)
-    }
-
-    pub fn peek_bootstrap_token(&self, token: &str) -> DbResult<Option<Uuid>> {
+    pub fn account_by_key(&self, ssh_key: &str) -> DbResult<Option<Uuid>> {
         self.conn()
-            .query_row("SELECT account_id FROM bootstrap_tokens WHERE hash = ?1 AND used = 0", [hash(token)], |r| r.get(0))
+            .query_row("SELECT id FROM accounts WHERE ssh_key = ?1", [ssh_key], |r| r.get(0))
             .optional()
             .map(|o| o.map(uuid))
     }
 
-    pub fn consume_bootstrap_token(&self, token: &str) -> DbResult<Option<Uuid>> {
-        let conn = self.conn();
-        let acc: Option<String> = conn
-            .query_row(
-                "UPDATE bootstrap_tokens SET used = 1 WHERE hash = ?1 AND used = 0 RETURNING account_id",
-                [hash(token)],
-                |r| r.get(0),
-            )
-            .optional()?;
-        Ok(acc.map(uuid))
-    }
-
-    pub fn set_recovery(&self, account: Uuid, blob: &[u8]) -> DbResult<()> {
-        self.conn().execute("UPDATE accounts SET recovery_wrapped = ?1 WHERE id = ?2", params![blob, account.to_string()])?;
-        Ok(())
-    }
-
-    pub fn get_recovery(&self, account: Uuid) -> DbResult<Option<Vec<u8>>> {
-        Ok(self
-            .conn()
-            .query_row("SELECT recovery_wrapped FROM accounts WHERE id = ?1", [account.to_string()], |r| r.get(0))
-            .optional()?
-            .flatten())
-    }
-
-    pub fn create_device(&self, account: Uuid, name: &str, pubkey: &[u8; 32], wrapped: &[u8]) -> DbResult<DeviceCredentials> {
-        Self::insert_device(&self.conn(), account, name, pubkey, wrapped)
-    }
-
-    fn insert_device(conn: &Connection, account: Uuid, name: &str, pubkey: &[u8; 32], wrapped: &[u8]) -> DbResult<DeviceCredentials> {
-        let id = Uuid::new_v4();
-        let token = new_token();
-        conn.execute(
-            "INSERT INTO devices (id, account_id, name, pubkey, token_hash, wrapped_keyring) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id.to_string(), account.to_string(), name, pubkey.as_slice(), hash(&token), wrapped],
+    /// Replaces the account's SSH key (lost or leaked key) and logs every device out.
+    pub fn set_account_key(&self, account: Uuid, ssh_key: &str, fingerprint: &str) -> DbResult<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        tx.execute(
+            "UPDATE accounts SET ssh_key = ?1, ssh_fingerprint = ?2 WHERE id = ?3",
+            params![ssh_key, fingerprint, account.to_string()],
         )?;
-        Ok(DeviceCredentials { device_id: id, token })
+        tx.execute("UPDATE devices SET revoked = 1 WHERE account_id = ?1", [account.to_string()])?;
+        tx.commit()
+    }
+
+    pub fn create_challenge(&self, ssh_key: &str, now: i64) -> DbResult<Challenge> {
+        let id = Uuid::new_v4();
+        let nonce = rand::thread_rng().r#gen::<[u8; 32]>().to_vec();
+        let conn = self.conn();
+        conn.execute("DELETE FROM challenges WHERE expires_at <= ?1", [now])?;
+        conn.execute(
+            "INSERT INTO challenges (id, ssh_key, nonce, expires_at) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), ssh_key, nonce, now + CHALLENGE_TTL_SECS],
+        )?;
+        Ok(Challenge { challenge_id: id, nonce })
+    }
+
+    /// Uses up a challenge: `(public key, nonce)` once, `None` afterwards or after it expired.
+    pub fn take_challenge(&self, id: Uuid, now: i64) -> DbResult<Option<(String, Vec<u8>)>> {
+        self.conn()
+            .query_row(
+                "DELETE FROM challenges WHERE id = ?1 RETURNING ssh_key, nonce, expires_at",
+                [id.to_string()],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)?)),
+            )
+            .optional()
+            .map(|o| o.filter(|(_, _, exp)| *exp > now).map(|(k, n, _)| (k, n)))
+    }
+
+    /// A new session token; for `device` of this account the same device id is kept.
+    pub fn login_device(&self, account: Uuid, name: &str, device: Option<Uuid>) -> DbResult<DeviceLogin> {
+        let token = new_token();
+        let conn = self.conn();
+        if let Some(id) = device {
+            let n = conn.execute(
+                "UPDATE devices SET token_hash = ?1, name = ?2, revoked = 0 WHERE id = ?3 AND account_id = ?4",
+                params![hash(&token), name, id.to_string(), account.to_string()],
+            )?;
+            if n == 1 {
+                return Ok(DeviceLogin { device_id: id, token });
+            }
+        }
+        let id = Uuid::new_v4();
+        conn.execute(
+            "INSERT INTO devices (id, account_id, name, token_hash) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), account.to_string(), name, hash(&token)],
+        )?;
+        Ok(DeviceLogin { device_id: id, token })
+    }
+
+    /// `None` for a new account (no keyring and no recovery copy yet).
+    pub fn account_keyring(&self, account: Uuid) -> DbResult<Option<AccountKeyring>> {
+        type Row = (Option<Vec<u8>>, Option<String>, Option<Vec<u8>>);
+        let row: Row = self.conn().query_row(
+            "SELECT ssh_wrapped, wrapped_for, recovery_wrapped FROM accounts WHERE id = ?1",
+            [account.to_string()],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        Ok(match row {
+            (None, _, None) => None,
+            (ssh, wrapped_for, recovery_wrapped) => Some(AccountKeyring {
+                ssh_wrapped: ssh.unwrap_or_default(),
+                wrapped_for: wrapped_for.unwrap_or_default(),
+                recovery_wrapped,
+            }),
+        })
+    }
+
+    /// Stores the keyring wrapped with the account's current SSH key — only while the stored
+    /// copy is not already for that key (first device, or after the key was replaced).
+    pub fn store_keyring(&self, account: Uuid, ssh_wrapped: &[u8], recovery: Option<&[u8]>) -> DbResult<bool> {
+        let n = self.conn().execute(
+            "UPDATE accounts SET ssh_wrapped = ?1, wrapped_for = ssh_fingerprint, recovery_wrapped = COALESCE(?2, recovery_wrapped)
+             WHERE id = ?3 AND (wrapped_for IS NULL OR wrapped_for != ssh_fingerprint)",
+            params![ssh_wrapped, recovery, account.to_string()],
+        )?;
+        Ok(n == 1)
     }
 
     pub fn device_by_token(&self, token: &str) -> DbResult<Option<DeviceRow>> {
@@ -174,17 +223,9 @@ impl Db {
 
     pub fn list_devices(&self, account: Uuid) -> DbResult<Vec<DeviceInfo>> {
         let conn = self.conn();
-        let mut st = conn.prepare("SELECT id, name, pubkey, revoked, last_seen FROM devices WHERE account_id = ?1 ORDER BY name")?;
-        st.query_map([account.to_string()], |r| {
-            Ok(DeviceInfo {
-                id: uuid(r.get(0)?),
-                name: r.get(1)?,
-                pubkey: key32(r.get(2)?),
-                revoked: r.get(3)?,
-                last_seen: r.get(4)?,
-            })
-        })?
-        .collect()
+        let mut st = conn.prepare("SELECT id, name, revoked, last_seen FROM devices WHERE account_id = ?1 ORDER BY name")?;
+        st.query_map([account.to_string()], |r| Ok(DeviceInfo { id: uuid(r.get(0)?), name: r.get(1)?, revoked: r.get(2)?, last_seen: r.get(3)? }))?
+            .collect()
     }
 
     pub fn revoke_device(&self, account: Uuid, device: Uuid) -> DbResult<bool> {
@@ -193,95 +234,6 @@ impl Db {
             params![device.to_string(), account.to_string()],
         )?;
         Ok(n == 1)
-    }
-
-    pub fn device_keyring(&self, device: Uuid) -> DbResult<Option<Vec<u8>>> {
-        self.conn()
-            .query_row("SELECT wrapped_keyring FROM devices WHERE id = ?1", [device.to_string()], |r| r.get(0))
-            .optional()
-    }
-
-    pub fn update_keyrings(&self, account: Uuid, per_device: &[(Uuid, Vec<u8>)], recovery: Option<&[u8]>) -> DbResult<()> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        for (dev, wrapped) in per_device {
-            tx.execute(
-                "UPDATE devices SET wrapped_keyring = ?1 WHERE id = ?2 AND account_id = ?3",
-                params![wrapped, dev.to_string(), account.to_string()],
-            )?;
-        }
-        if let Some(r) = recovery {
-            tx.execute("UPDATE accounts SET recovery_wrapped = ?1 WHERE id = ?2", params![r, account.to_string()])?;
-        }
-        tx.commit()
-    }
-
-    pub fn create_pairing(&self, name: &str, pubkey: &[u8; 32], now: i64) -> DbResult<PairingStarted> {
-        let id = Uuid::new_v4();
-        let secret = new_token();
-        let mut rng = rand::thread_rng();
-        let code: String = (0..8).map(|_| CODE_ALPHABET[rng.gen_range(0..CODE_ALPHABET.len())] as char).collect();
-        self.conn().execute(
-            "INSERT INTO pairings (id, secret_hash, code, pubkey, name, status, expires_at) VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
-            params![id.to_string(), hash(&secret), code, pubkey.as_slice(), name, now + PAIRING_TTL_SECS],
-        )?;
-        Ok(PairingStarted { pairing_id: id, secret, code })
-    }
-
-    pub fn pairing_by_code(&self, code: &str, now: i64) -> DbResult<Option<PairingInfo>> {
-        self.conn()
-            .query_row(
-                "SELECT id, name, pubkey FROM pairings WHERE code = ?1 AND status = 'pending' AND expires_at > ?2",
-                params![code.to_uppercase(), now],
-                |r| Ok(PairingInfo { pairing_id: uuid(r.get(0)?), device_name: r.get(1)?, device_pubkey: key32(r.get(2)?) }),
-            )
-            .optional()
-    }
-
-    /// Creates the device for a pending pairing; `None` if it is not pending or expired.
-    pub fn approve_pairing(&self, pairing: Uuid, account: Uuid, wrapped: &[u8], now: i64) -> DbResult<Option<DeviceCredentials>> {
-        let mut conn = self.conn();
-        let tx = conn.transaction()?;
-        let row: Option<(String, Vec<u8>)> = tx
-            .query_row(
-                "SELECT name, pubkey FROM pairings WHERE id = ?1 AND status = 'pending' AND expires_at > ?2",
-                params![pairing.to_string(), now],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()?;
-        let Some((name, pubkey)) = row else { return Ok(None) };
-        let creds = Self::insert_device(&tx, account, &name, &key32(pubkey), wrapped)?;
-        tx.execute(
-            "UPDATE pairings SET status = 'approved', device_id = ?1, pending_token = ?2, wrapped_keyring = ?3 WHERE id = ?4",
-            params![creds.device_id.to_string(), creds.token, wrapped, pairing.to_string()],
-        )?;
-        tx.commit()?;
-        Ok(Some(creds))
-    }
-
-    pub fn poll_pairing(&self, pairing: Uuid, secret: &str, now: i64) -> DbResult<PollOutcome> {
-        type Row = (String, i64, Option<String>, Option<String>, Option<Vec<u8>>);
-        let conn = self.conn();
-        let row: Option<Row> = conn
-            .query_row(
-                "SELECT status, expires_at, device_id, pending_token, wrapped_keyring FROM pairings WHERE id = ?1 AND secret_hash = ?2",
-                params![pairing.to_string(), hash(secret)],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()?;
-        let Some((status, expires_at, device, token, wrapped)) = row else { return Ok(PollOutcome::NotFound) };
-        match (status.as_str(), device, token, wrapped) {
-            ("approved", Some(device), Some(token), Some(wrapped)) => {
-                conn.execute("UPDATE pairings SET pending_token = NULL, status = 'delivered' WHERE id = ?1", [pairing.to_string()])?;
-                Ok(PollOutcome::Status(PairingStatus::Approved {
-                    credentials: DeviceCredentials { device_id: uuid(device), token },
-                    wrapped_keyring: wrapped,
-                }))
-            }
-            ("pending", ..) if expires_at > now => Ok(PollOutcome::Status(PairingStatus::Pending)),
-            ("pending", ..) => Ok(PollOutcome::Status(PairingStatus::Expired)),
-            _ => Ok(PollOutcome::Gone),
-        }
     }
 
     pub fn create_project(&self, account: Uuid, meta: &[u8]) -> DbResult<Uuid> {

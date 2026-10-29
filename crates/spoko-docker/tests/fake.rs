@@ -27,8 +27,8 @@ struct Two {
 fn two() -> Two {
     let srv = spawn_test_server();
     let (ha, hb) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-    let (a, rk) = account::login_bootstrap(ha.path(), &srv.url, &srv.bootstrap_token("jan"), "mac", None).unwrap();
-    let (b, _) = account::login_bootstrap(hb.path(), &srv.url, &srv.bootstrap_token("jan"), "linux", rk.as_ref()).unwrap();
+    let (a, _) = { srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519")); account::login(ha.path(), &srv.url, &spoko_crypto::test_util::key_path("id_ed25519"), "mac", None, None) }.unwrap();
+    let (b, _) = { srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519")); account::login(hb.path(), &srv.url, &spoko_crypto::test_util::key_path("id_ed25519"), "linux", None, None) }.unwrap();
     let project = a.api().create_project(b"m").unwrap().id;
     Two { srv, a, b, project, _homes: vec![ha, hb] }
 }
