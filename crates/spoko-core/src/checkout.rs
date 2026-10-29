@@ -4,9 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::platform::{self, DiskKind, NameProblem, RelPath, SymlinkOutcome, fold_key, read_entry, windows_problem};
+use crate::platform::{self, DiskEntry, DiskKind, NameProblem, RelPath, SymlinkOutcome, fold_key, read_entry, windows_problem};
 use crate::scan::StatCache;
 use crate::store::{Entry, EntryMode, Store, WorkMap};
 use crate::transform::ContentTransform;
@@ -114,6 +114,46 @@ fn remove_empty_parents(root: &Path, rel: &RelPath) {
     }
 }
 
+/// Blobs up to this size are written by the pool (bigger ones stream from the store).
+const POOL_MAX_BLOB: u64 = 1 << 20;
+/// Content buffered for the pool before it is written.
+const WAVE_BYTES: usize = 64 << 20;
+
+/// Writes `jobs` (path, absolute path, content, exec) on a few threads. Work is handed out a
+/// directory at a time: the filesystem serializes creates and renames within one directory.
+fn write_pool<'p>(jobs: Vec<(&'p RelPath, PathBuf, Vec<u8>, bool)>) -> io::Result<Vec<(&'p RelPath, DiskEntry)>> {
+    if jobs.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut by_dir: BTreeMap<PathBuf, Vec<(&'p RelPath, PathBuf, Vec<u8>, bool)>> = BTreeMap::new();
+    for j in jobs {
+        by_dir.entry(j.1.parent().expect("file has a parent").to_path_buf()).or_default().push(j);
+    }
+    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().clamp(2, 8)).min(by_dir.len());
+    let queue = std::sync::Mutex::new(by_dir.into_iter());
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                s.spawn(|| -> io::Result<Vec<(&'p RelPath, DiskEntry)>> {
+                    let mut out = Vec::new();
+                    loop {
+                        let Some((dir, files)) = queue.lock().expect("write queue").next() else { return Ok(out) };
+                        fs::create_dir_all(&dir)?;
+                        for (rel, abs, bytes, exec) in files {
+                            out.push((rel, platform::atomic_write_in_dir(&abs, exec, &mut |w| w.write_all(&bytes))?));
+                        }
+                    }
+                })
+            })
+            .collect();
+        let mut all = Vec::new();
+        for h in handles {
+            all.extend(h.join().expect("writer thread panicked")?);
+        }
+        Ok(all)
+    })
+}
+
 pub fn apply_tree(
     root: &Path,
     store: &Store,
@@ -168,6 +208,11 @@ pub fn apply_tree(
     }
 
     let mut index = 0;
+    // Plain small blobs are written by a thread pool (open/write/fsync/rename dominate a big
+    // checkout); links, transformed and big streamed files, and fault-injected runs stay inline.
+    let mut written: BTreeMap<&RelPath, DiskEntry> = BTreeMap::new();
+    let mut wave: Vec<(&RelPath, PathBuf, Vec<u8>, bool)> = Vec::new();
+    let mut wave_bytes = 0;
     for p in changed.iter().filter(|p| to.contains_key(**p)) {
         let entry = to[*p];
         if let Some(reason) = skip.get(*p) {
@@ -180,6 +225,20 @@ pub fn apply_tree(
         let abs = p.to_fs(root);
         if read_entry(&abs)?.is_some_and(|d| d.kind == DiskKind::Dir) {
             report.skipped.push(((*p).clone(), SkipReason::DirInTheWay));
+            continue;
+        }
+        let pooled = opts.faults.is_none()
+            && entry.mode != EntryMode::Link
+            && !opts.transform.is_some_and(|t| t.applies(p))
+            && store.blob_size(entry.oid)? <= POOL_MAX_BLOB;
+        if pooled {
+            let bytes = store.read_blob(entry.oid)?;
+            wave_bytes += bytes.len();
+            wave.push((*p, abs, bytes, entry.mode == EntryMode::BlobExec));
+            if wave_bytes >= WAVE_BYTES {
+                written.extend(write_pool(std::mem::take(&mut wave))?);
+                wave_bytes = 0;
+            }
             continue;
         }
         if let Some(f) = opts.faults {
@@ -204,8 +263,13 @@ pub fn apply_tree(
                 store.copy_blob_to(entry.oid, w).map(|_| ()).map_err(io::Error::other)
             })?
         };
-        cache.record(p, &disk, entry);
-        report.written.push((*p).clone());
+        written.insert(p, disk);
     }
+    written.extend(write_pool(wave)?);
+    for (p, disk) in written {
+        cache.record(p, &disk, to[p]);
+        report.written.push(p.clone());
+    }
+    report.written.sort();
     Ok(report)
 }

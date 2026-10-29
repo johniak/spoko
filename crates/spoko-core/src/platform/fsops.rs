@@ -111,8 +111,12 @@ pub fn atomic_write_barrier(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// [`atomic_write`] where the content is produced by `fill`.
 pub fn atomic_write_with(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<DiskEntry> {
-    let dir = path.parent().expect("file has a parent");
-    fs::create_dir_all(dir)?;
+    fs::create_dir_all(path.parent().expect("file has a parent"))?;
+    atomic_write_in_dir(path, exec, fill)
+}
+
+/// [`atomic_write_with`] for a path whose parent directory already exists.
+pub fn atomic_write_in_dir(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<DiskEntry> {
     let tmp = tmp_path(path);
     let result = (|| {
         let mut f = io::BufWriter::new(fs::File::create(&tmp)?);
@@ -130,10 +134,11 @@ pub fn atomic_write_with(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn 
     Ok(read_entry(path)?.expect("just written"))
 }
 
+/// A fresh temp file is never executable (0666 & ~umask), so only `exec` needs a chmod.
 #[cfg(unix)]
 fn set_exec(f: &fs::File, exec: bool) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    f.set_permissions(fs::Permissions::from_mode(if exec { 0o755 } else { 0o644 }))
+    if exec { f.set_permissions(fs::Permissions::from_mode(0o755)) } else { Ok(()) }
 }
 
 #[cfg(not(unix))]

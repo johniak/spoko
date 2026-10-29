@@ -80,6 +80,9 @@ impl DeviceCtx {
     }
 }
 
+/// Present in the project's data dir while an apply runs (see `Engine::apply_snapshot`).
+const APPLY_MARKER: &str = "applying";
+
 pub fn project_dir(home: &Path, project: Uuid) -> PathBuf {
     home.join("projects").join(project.to_string())
 }
@@ -179,14 +182,16 @@ impl Engine {
         Ok(())
     }
 
-    /// Opens an existing local project and removes temp files a crash may have left.
+    /// Opens an existing local project and removes temp files an interrupted apply may have left.
     pub fn open(ctx: DeviceCtx, project_id: Uuid, root: &Path) -> Result<Engine> {
         let e = Engine::load(ctx, project_id, root)?;
-        if root.is_dir() {
+        let marker = e.data_dir().join(APPLY_MARKER);
+        if root.is_dir() && marker.exists() {
             let m = &e.matcher;
             platform::cleanup_tmp(root, &|p| {
                 RelPath::from_fs(root, p).is_some_and(|r| !m.should_descend(&r))
             })?;
+            std::fs::remove_file(&marker)?;
         }
         Ok(e)
     }
@@ -463,7 +468,17 @@ impl Engine {
     }
 
     /// Makes the disk match snapshot `to`, starting from `last_local`. On success `last_local = to`.
+    /// Marks the apply as in progress so a crash (or failure) half-way triggers the temp-file
+    /// cleanup on the next open; a clean open never walks the tree for it.
     fn apply_snapshot(&mut self, to: Oid, join: bool) -> Result<Applied> {
+        let marker = self.data_dir().join(APPLY_MARKER);
+        std::fs::write(&marker, b"")?;
+        let r = self.apply_snapshot_inner(to, join)?;
+        std::fs::remove_file(&marker)?;
+        Ok(r)
+    }
+
+    fn apply_snapshot_inner(&mut self, to: Oid, join: bool) -> Result<Applied> {
         let target = read_snapshot(&self.store, to)?;
         let current = self
             .state

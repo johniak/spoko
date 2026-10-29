@@ -138,6 +138,7 @@ fn batch_writes_one_pack_and_objects_stay_readable() {
     assert_eq!(count_loose(&d.path().join("s.git/objects")), loose_before + 1, "only the big blob is loose");
     let packs = std::fs::read_dir(d.path().join("s.git/objects/pack")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "pack")).count();
     assert_eq!(packs, 1);
+    assert!(ids.iter().all(|o| store.has(*o)), "the same handle sees its own pack without a lookup refresh");
     for (i, oid) in ids.iter().take(500).enumerate() {
         assert_eq!(store.read_blob(*oid).unwrap(), format!("blob {i}").into_bytes());
         let mut out = vec![];

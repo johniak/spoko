@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::path::Path;
 
-use git2::{ObjectType, Oid, Repository, Signature, Time};
+use git2::{ObjectType, OdbLookupFlags, Oid, Repository, Signature, Time};
 
 pub use workmap::{Entry, EntryMode, WorkMap};
 
@@ -100,7 +100,8 @@ impl Store {
             let (k, d) = &objects[o];
             (*k, d.as_slice())
         }));
-        pack::write(&odb, &bytes)
+        pack::write(&odb, &bytes)?;
+        odb.refresh()
     }
 
     fn pending_get<R>(&self, oid: Oid, f: impl FnOnce(ObjectType, &[u8]) -> R) -> Option<R> {
@@ -119,7 +120,7 @@ impl Store {
             }
             oid
         };
-        if self.repo.odb()?.exists(oid) {
+        if self.repo.odb()?.exists_ext(oid, OdbLookupFlags::NO_REFRESH) {
             return Ok(Some(oid));
         }
         let full = {
@@ -194,8 +195,10 @@ impl Store {
         }
     }
 
+    /// Without re-listing `objects/pack` on a miss (libgit2's default): a miss is the common
+    /// case while downloading, and this process refreshes after every pack it writes itself.
     pub fn has(&self, oid: Oid) -> bool {
-        self.pending_get(oid, |_, _| ()).is_some() || self.repo.odb().is_ok_and(|o| o.exists(oid))
+        self.pending_get(oid, |_, _| ()).is_some() || self.repo.odb().is_ok_and(|o| o.exists_ext(oid, OdbLookupFlags::NO_REFRESH))
     }
 
     pub fn read_raw(&self, oid: Oid) -> Result<Option<(ObjectType, Vec<u8>)>, git2::Error> {

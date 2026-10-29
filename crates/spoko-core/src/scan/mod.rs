@@ -1,5 +1,6 @@
 //! Turning the project directory into a [`WorkMap`], hashing only what changed.
 
+mod parallel;
 mod statcache;
 
 use std::collections::BTreeSet;
@@ -91,6 +92,11 @@ impl Scanner<'_> {
         if let Some(hit) = self.cache.lookup(rel, disk) {
             return Ok(hit);
         }
+        self.hash_miss(rel, disk, None)
+    }
+
+    /// `preloaded`: the file's content, already read by a walker thread.
+    fn hash_miss(&mut self, rel: &RelPath, disk: &DiskEntry, preloaded: Option<Vec<u8>>) -> crate::Result<Entry> {
         self.out.stats.hashed += 1;
         let prev = self.prev.get(rel);
         let entry = match &disk.kind {
@@ -101,8 +107,10 @@ impl Scanner<'_> {
                 Entry { oid: self.store.write_blob(&t.disk_to_snapshot(&bytes))?, mode: EntryMode::Blob }
             }
             _ => {
-                let mut f = fs::File::open(rel.to_fs(self.root))?;
-                let oid = self.store.write_blob_stream(&mut f, disk.size)?;
+                let oid = match preloaded {
+                    Some(bytes) => self.store.write_blob(&bytes)?,
+                    None => self.store.write_blob_stream(&mut fs::File::open(rel.to_fs(self.root))?, disk.size)?,
+                };
                 let placeholder = self.cache.entries.get(rel).is_some_and(|c| c.symlink_placeholder);
                 let exec = if cfg!(windows) { prev.is_some_and(|p| p.mode == EntryMode::BlobExec) } else { disk.exec };
                 let mode = if placeholder && prev.is_some_and(|p| p.mode == EntryMode::Link && p.oid == oid) {
@@ -134,8 +142,27 @@ pub fn full_scan_with(
     prev: &WorkMap,
     transform: Option<&dyn ContentTransform>,
 ) -> crate::Result<ScanResult> {
+    let walked = if transform.is_none() { Some(parallel::walk(root, matcher, cache)?) } else { None };
     let mut s = Scanner { root, matcher, store, cache, prev, transform, out: ScanResult::default() };
-    s.walk_dir(None)?;
+    match walked {
+        Some(w) => {
+            s.out.problems = w.problems;
+            s.out.stats.dirs_visited = w.dirs_visited;
+            for f in w.found {
+                let entry = match f.hit {
+                    Some(hit) => Ok(hit),
+                    None => s.hash_miss(&f.rel, &f.disk, f.bytes),
+                };
+                match entry {
+                    Ok(e) => {
+                        s.out.work.insert(f.rel, e);
+                    }
+                    Err(e) => s.out.problems.push((f.rel, ScanProblem::Unreadable(e.to_string()))),
+                }
+            }
+        }
+        None => s.walk_dir(None)?,
+    }
     let out = s.out;
     cache.entries.retain(|p, _| out.work.contains_key(p));
     Ok(out)
