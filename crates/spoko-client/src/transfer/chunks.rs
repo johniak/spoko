@@ -70,9 +70,8 @@ pub fn parallel_put(
                         sent += sealed.len();
                         batch.push((id, sealed));
                     }
-                    if !batch.is_empty() {
-                        server.put(&batch)?;
-                    }
+                    // groups are never empty, so neither is the last batch
+                    server.put(&batch)?;
                     Ok(sent)
                 })
             })

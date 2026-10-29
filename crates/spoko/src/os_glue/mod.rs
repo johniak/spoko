@@ -11,3 +11,16 @@ use crate::docker_ext::DockerExt;
 pub fn docker_ext() -> DockerExt {
     DockerExt::with(Arc::new(|| Ok(Arc::new(BollardApi::connect()?) as Arc<dyn DockerApi>)))
 }
+
+/// `spoko daemon install|uninstall`: changes the real login items (launchd / systemd / registry).
+pub fn autostart(install: bool, out: &mut dyn std::io::Write) -> crate::commands::Res<()> {
+    use spoko_client::os_glue::autostart;
+    if install {
+        autostart::install()?;
+        writeln!(out, "daemon będzie startował po zalogowaniu")?;
+    } else {
+        autostart::uninstall()?;
+        writeln!(out, "usunięto autostart daemona")?;
+    }
+    Ok(())
+}

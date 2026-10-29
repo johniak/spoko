@@ -71,8 +71,9 @@ fn read_record(ctx: &VolumeCtx<'_>, kind: Kind, volume: &str) -> Result<Option<(
 }
 
 fn write_record(ctx: &VolumeCtx<'_>, volume: &str, rec: &VolumeRecord) -> Result<()> {
-    let value = seal(ctx.keyring, b"volume", &serde_json::to_vec(rec).map_err(|e| Error::Other(e.to_string()))?);
-    ctx.api.put_pointer(ctx.project, &pointer_name(ctx.keyring, rec.kind, volume), None, &value)?.map_err(|_| Error::Other("volume pointer".into()))?;
+    let value = seal(ctx.keyring, b"volume", &serde_json::to_vec(rec).expect("volume record serializes"));
+    // no expected version: an unconditional write, never a conflict
+    let _ = ctx.api.put_pointer(ctx.project, &pointer_name(ctx.keyring, rec.kind, volume), None, &value)?;
     Ok(())
 }
 
@@ -203,7 +204,7 @@ struct Request {
 
 /// Asks the other devices for a fresh snapshot of `volume` (the daemon there answers with `push`).
 pub fn request_fresh(api: &ApiClient, kr: &Keyring, project: Uuid, volume: &str) -> Result<()> {
-    let body = serde_json::to_vec(&Request { kind: "volume_request".into(), name_id: name_id(kr, "vol", volume) }).map_err(|e| Error::Other(e.to_string()))?;
+    let body = serde_json::to_vec(&Request { kind: "volume_request".into(), name_id: name_id(kr, "vol", volume) }).expect("request serializes");
     api.post_message(project, &seal(kr, b"message", &body))?;
     Ok(())
 }

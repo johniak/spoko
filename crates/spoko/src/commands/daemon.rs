@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use spoko_client::daemon::ipc::{self, Request};
 use spoko_client::daemon::{self, DaemonOpts};
 use spoko_client::notifier::Notifier;
-use spoko_client::os_glue::{autostart, notify_native::NativeNotifier};
+use spoko_client::os_glue::notify_native::NativeNotifier;
 
 use super::{Ctx, PrintNotifier, Res, err};
 use crate::cli::DaemonCmd;
@@ -45,14 +45,8 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
             }
             writeln!(out, "daemon zatrzymany")?;
         }
-        DaemonCmd::Install => {
-            autostart::install()?;
-            writeln!(out, "daemon będzie startował po zalogowaniu")?;
-        }
-        DaemonCmd::Uninstall => {
-            autostart::uninstall()?;
-            writeln!(out, "usunięto autostart daemona")?;
-        }
+        DaemonCmd::Install => crate::os_glue::autostart(true, out)?,
+        DaemonCmd::Uninstall => crate::os_glue::autostart(false, out)?,
     }
     Ok(())
 }

@@ -29,7 +29,8 @@ pub fn init(ctx: &Ctx, path: Option<PathBuf>, name: Option<String>, out: &mut dy
         return err(format!("{} już jest projektem spoko", root.display()));
     }
     let id = ctx.identity()?;
-    let name = name.unwrap_or_else(|| root.file_name().map_or_else(|| "projekt".into(), |n| n.to_string_lossy().into_owned()));
+    // only `/` has no file name
+    let name = name.unwrap_or_else(|| root.file_name().map_or("projekt".into(), |n| n.to_string_lossy().into_owned()));
     let e = Engine::create(ctx.device_ctx(&id), &root, &name)?;
     ctx.register(e.project_id, &root)?;
     writeln!(out, "Projekt: {}", e.project_id)?;
@@ -93,7 +94,7 @@ fn offline_status(ctx: &Ctx, id: Uuid, root: &std::path::Path) -> Res<ProjectSta
         None => SyncState::Syncing,
     };
     let pending_hooks = e.state.pending_hooks.iter().filter_map(|h| e.config().watch.get(*h)).filter_map(|w| hooks::command_for(w, hooks::Os::current())).map(str::to_owned).collect();
-    let name = root.file_name().map_or_else(|| id.to_string(), |n| n.to_string_lossy().into_owned());
+    let name = root.file_name().map_or(id.to_string(), |n| n.to_string_lossy().into_owned());
     Ok(ProjectStatus { id, name, root: root.to_path_buf(), state, last_sync: None, pending_hooks, conflicts, warnings: vec![], volume_prompts: vec![] })
 }
 
