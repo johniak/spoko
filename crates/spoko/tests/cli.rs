@@ -255,3 +255,13 @@ fn passphrase_key_daemon_starts_locked_and_unlocks_from_stdin() {
     assert!(m.ok(&["status"], None).contains("daemon: działa"));
     m.ok(&["daemon", "stop"], None);
 }
+
+#[test]
+fn daemon_started_before_login_waits_and_says_so() {
+    let m = Machine::new();
+    let out = m.ok(&["daemon", "start"], None);
+    assert!(out.contains("daemon uruchomiony") && out.contains("spoko login"), "{out}");
+    let st = m.ok(&["status"], None);
+    assert!(st.contains("daemon: czeka") && st.contains("spoko login"), "{st}");
+    m.ok(&["daemon", "stop"], None);
+}

@@ -19,7 +19,7 @@ fn project(name: &str, state: SyncState) -> ProjectStatus {
 }
 
 fn report(ps: Vec<ProjectStatus>) -> StatusReport {
-    StatusReport { device_name: "mac".into(), projects: ps, locked: false }
+    StatusReport { device_name: "mac".into(), projects: ps, locked: false, problem: None }
 }
 
 #[test]
@@ -81,7 +81,7 @@ fn offline_when_daemon_unreachable() {
 
 #[test]
 fn locked_daemon_offers_unlock_in_a_terminal() {
-    let m = build(&StatusReport { device_name: "mac".into(), projects: vec![], locked: true });
+    let m = build(&StatusReport { device_name: "mac".into(), projects: vec![], locked: true, problem: None });
     assert_eq!(m.icon, IconState::Paused);
     assert!(m.tooltip.contains("hasło klucza SSH"), "{}", m.tooltip);
     let unlock = m.items.iter().find(|i| i.label.starts_with("Odblokuj")).expect("unlock item");
@@ -98,4 +98,13 @@ fn first_line_says_spoko_runs_on_this_device() {
     let none = build(&report(vec![]));
     assert_eq!(none.items[0].label, "spoko działa · mac · brak projektów (spoko init)");
     assert_eq!(build(&report((0..5).map(|i| project(&i.to_string(), SyncState::Synced)).collect())).items[0].label, "spoko działa · mac · 5 projektów");
+}
+
+#[test]
+fn daemon_without_identity_says_why_and_offers_login() {
+    let m = build(&StatusReport { device_name: String::new(), projects: vec![], locked: false, problem: Some("not logged in (spoko login)".into()) });
+    assert_eq!(m.icon, IconState::Offline);
+    assert!(m.tooltip.contains("not logged in"), "{}", m.tooltip);
+    assert!(m.items.iter().any(|i| i.label.contains("not logged in") && !i.enabled));
+    assert!(matches!(m.items.last().unwrap().action, Some(Action::Quit)));
 }

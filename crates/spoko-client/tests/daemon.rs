@@ -339,3 +339,28 @@ fn reload_picks_up_a_project_added_while_running() {
     });
     stop_daemon(&a, h);
 }
+
+#[test]
+fn daemon_without_a_usable_identity_stays_up_and_says_why() {
+    // not logged in at all: autostart would restart a daemon that exits, forever
+    let home = tempfile::tempdir().unwrap();
+    let h = {
+        let home = home.path().to_path_buf();
+        let opts = DaemonOpts { ext: Arc::new(NoExtensions), notifier: Arc::new(spoko_client::notifier::NullNotifier), env: spoko_core::external::ExternalEnv { home: home.clone(), claude_config_dir: None }, rescan_every: Duration::from_secs(300) };
+        std::thread::spawn(move || daemon::run(&home, opts))
+    };
+    let mut report = None;
+    wait_for(Duration::from_secs(10), || match ipc::request(home.path(), &Request::Status) {
+        Ok(Response::Status { report: r }) => {
+            report = Some(r);
+            true
+        }
+        _ => false,
+    });
+    let r = report.expect("daemon answers");
+    assert!(!r.locked && r.projects.is_empty());
+    assert!(r.problem.as_deref().is_some_and(|p| p.contains("spoko login")), "{r:?}");
+    assert!(matches!(ipc::request(home.path(), &Request::Sync { project: Uuid::nil() }).unwrap(), Response::Error { message } if message.contains("spoko login")));
+    assert_eq!(ipc::request(home.path(), &Request::Shutdown).unwrap(), Response::Ok);
+    h.join().unwrap().unwrap();
+}

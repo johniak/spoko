@@ -137,17 +137,18 @@ pub fn status(ctx: &Ctx, json: bool, out: &mut dyn Write) -> Res<()> {
             for (pid, p) in ctx.local()?.projects {
                 projects.push(offline_status(ctx, pid, &p.path)?);
             }
-            (false, StatusReport { device_name: id.device_name.clone(), projects, locked: false })
+            (false, StatusReport { device_name: id.device_name.clone(), projects, locked: false, problem: None })
         }
     };
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
     }
-    let daemon = match (running, report.locked) {
-        (false, _) => "nie działa",
-        (true, true) => "zablokowany (spoko unlock)",
-        (true, false) => "działa",
+    let daemon = match (running, report.locked, &report.problem) {
+        (false, ..) => "nie działa".into(),
+        (true, true, _) => "zablokowany (spoko unlock)".into(),
+        (true, false, Some(p)) => format!("czeka — {p}"),
+        (true, false, None) => "działa".into(),
     };
     writeln!(out, "urządzenie: {}  daemon: {daemon}", report.device_name)?;
     for p in &report.projects {

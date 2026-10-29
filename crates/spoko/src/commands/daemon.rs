@@ -38,8 +38,10 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
             crate::os_glue::spawn_daemon()?;
             wait(ctx, true)?;
             writeln!(out, "daemon uruchomiony")?;
-            if locked(ctx)? {
-                writeln!(out, "klucz SSH ma hasło: odblokuj daemon poleceniem spoko unlock")?;
+            match ipc::request(&ctx.home, &Request::Status)? {
+                Response::Status { report } if report.locked => writeln!(out, "klucz SSH ma hasło: odblokuj daemon poleceniem spoko unlock")?,
+                Response::Status { report: ipc::StatusReport { problem: Some(p), .. } } => writeln!(out, "daemon czeka: {p}")?,
+                _ => {}
             }
         }
         DaemonCmd::Stop => {

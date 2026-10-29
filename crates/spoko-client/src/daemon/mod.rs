@@ -56,18 +56,27 @@ struct ProjectHandle {
 
 /// Runs until a `Shutdown` request. Fails if another daemon owns this `SPOKO_HOME`.
 pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
+    // started before the first login (autostart): the home does not exist yet
+    std::fs::create_dir_all(home)?;
     let lock_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock"))?;
     let mut lock = fd_lock::RwLock::new(lock_file);
     let _guard = lock.try_write().map_err(|_| ClientError::Other("spoko daemon is already running for this SPOKO_HOME".into()))?;
     let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
     let listener = ipc::listen(home)?;
     let identity = match Identity::load(home, None) {
-        // a key with a passphrase: wait for `spoko unlock` instead of failing
-        Err(ClientError::Crypto(spoko_crypto::CryptoError::Encrypted)) => match wait_for_unlock(home, &listener, &local) {
-            Some(id) => id,
-            None => return remove_socket(home),
-        },
-        r => r?,
+        Ok(id) => id,
+        // a key with a passphrase: wait for `spoko unlock`; anything else: say why and wait
+        // for `spoko login` (which restarts the daemon) instead of exiting into a restart loop
+        Err(e) => {
+            let problem = match e {
+                ClientError::Crypto(spoko_crypto::CryptoError::Encrypted) => None,
+                e => Some(format!("{e} (spoko login)")),
+            };
+            match wait_for_unlock(home, &listener, &local, problem) {
+                Some(id) => id,
+                None => return remove_socket(home),
+            }
+        }
     };
     let prompts = Arc::new(PromptTracker { inner: opts.notifier.clone(), prompts: Mutex::new(BTreeMap::new()) });
     let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), prompts.clone());
@@ -166,9 +175,11 @@ fn remove_socket(home: &Path) -> Result<()> {
 const LOCKED: &str = "daemon is locked: the SSH key has a passphrase (run spoko unlock)";
 
 /// Answers status requests until a correct passphrase arrives (`None`: shut down meanwhile).
-fn wait_for_unlock(home: &Path, listener: &interprocess::local_socket::Listener, local: &LocalConfig) -> Option<Identity> {
+/// `problem`: the identity is unusable for another reason; status reports it.
+fn wait_for_unlock(home: &Path, listener: &interprocess::local_socket::Listener, local: &LocalConfig, problem: Option<String>) -> Option<Identity> {
     let mut unlocked = None;
     let device_name = local.device_name.clone().unwrap_or_default();
+    let refusal = problem.clone().unwrap_or_else(|| LOCKED.into());
     ipc::serve_until(listener, &mut |req| match req {
         Request::Unlock { passphrase } => match Identity::load(home, Some(&passphrase)) {
             Ok(id) => {
@@ -177,8 +188,11 @@ fn wait_for_unlock(home: &Path, listener: &interprocess::local_socket::Listener,
             }
             Err(e) => (Response::Error { message: e.to_string() }, false),
         },
-        Request::Status => (Response::Status { report: StatusReport { device_name: device_name.clone(), projects: vec![], locked: true } }, false),
-        _ => (Response::Error { message: LOCKED.into() }, false),
+        Request::Status => {
+            let report = StatusReport { device_name: device_name.clone(), projects: vec![], locked: problem.is_none(), problem: problem.clone() };
+            (Response::Status { report }, false)
+        }
+        _ => (Response::Error { message: refusal.clone() }, false),
     });
     unlocked
 }
@@ -212,7 +226,7 @@ fn dispatch(identity: &Identity, projects: &BTreeMap<Uuid, ProjectHandle>, promp
                 st
             })
             .collect();
-        return Response::Status { report: StatusReport { device_name: identity.device_name.clone(), projects, locked: false } };
+        return Response::Status { report: StatusReport { device_name: identity.device_name.clone(), projects, locked: false, problem: None } };
     }
     if let Request::Unlock { .. } = req {
         return Response::Ok;

@@ -79,6 +79,13 @@ pub fn build(r: &StatusReport) -> MenuModel {
             ],
         };
     }
+    if let Some(problem) = &r.problem {
+        return MenuModel {
+            icon: IconState::Offline,
+            tooltip: format!("spoko: {problem}"),
+            items: vec![info(format!("spoko czeka: {problem}")), act("Zakończ", Action::Quit)],
+        };
+    }
     let icon = r.projects.iter().map(|p| state_icon(&p.state)).max().unwrap_or(IconState::Ok);
     let mut items = vec![info(format!("spoko działa · {} · {}", r.device_name, projects_pl(r.projects.len()))), info(SEPARATOR)];
     for p in &r.projects {

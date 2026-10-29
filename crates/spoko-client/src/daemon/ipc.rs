@@ -100,6 +100,10 @@ pub struct StatusReport {
     /// Waiting for `spoko unlock` (the SSH key has a passphrase); nothing syncs meanwhile.
     #[serde(default)]
     pub locked: bool,
+    /// Why nothing syncs when the daemon is up without a usable identity (not logged in, key
+    /// missing or replaced); it waits instead of exiting, so autostart does not restart-loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
