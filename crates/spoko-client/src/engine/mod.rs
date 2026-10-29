@@ -660,6 +660,11 @@ impl Engine {
         (self.ctx.clock)()
     }
 
+    /// Current time from the device clock (unix seconds).
+    pub fn now_public(&self) -> i64 {
+        self.now()
+    }
+
     /// Number of object ids known to be on the server.
     pub fn known_objects(&self) -> usize {
         self.known.len()
