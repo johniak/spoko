@@ -261,11 +261,15 @@ Walidacja: `spoko config check` pokazuje, co jest synchronizowane, ignorowane, p
 
 Model zagrożeń: chronimy przed serwerem i każdym, kto go przejmie. **Nie** chronimy przed kimś z dostępem do komputera — ma i tak dostęp do kodu [decyzja autora].
 
-- Klucz konta / projektu: symetryczny (np. XChaCha20-Poly1305). Każde urządzenie: para kluczy (X25519). Klucz projektu przechowywany na serwerze w kopii zaszyfrowanej osobno dla każdego urządzenia.
-- Lokalnie: **plik z kluczem** w `~/.spoko/`, uprawnienia tylko dla użytkownika (Unix 0600, Windows ACL). Bez systemowych sejfów. Hasło nigdy przy starcie [decyzja].
-- Dodanie komputera: parowanie kodem — nowy komputer pokazuje krótki kod, użytkownik zatwierdza go na już podłączonym, ten przekazuje klucz [moja decyzja, autor nie zakwestionował]. Alternatywa: ręczne skopiowanie pliku klucza.
-- Klucz odzyskiwania: generowany raz przy zakładaniu konta, do zapisania — gdy żaden stary komputer nie jest dostępny [moja decyzja].
-- Usunięcie urządzenia: rotacja klucza projektu; nowe dane niedostępne dla starego urządzenia.
+**Zmiana z 2026-10-29 [decyzja autora]: uwierzytelnianie i szyfrowanie zawsze przez parę kluczy SSH.** Zastępuje wcześniejszy model (para X25519 na urządzenie, parowanie kodem, tokeny startowe).
+
+- **Jeden wspólny klucz SSH** użytkownika na wszystkich jego komputerach [decyzja autora] (np. `~/.ssh/id_ed25519` skopiowany na każdy komputer). Konto = ten klucz publiczny. Komputer, który ma klucz prywatny, loguje się sam — bez parowania.
+- Typy kluczy: wszystko, co czyta format OpenSSH — Ed25519, ECDSA, RSA. Wybór klucza jak w OpenSSH (`~/.ssh/id_ed25519`, `id_ecdsa`, `id_rsa`), `--key <plik>` nadpisuje; wybrana ścieżka zapamiętana dla urządzenia. Odcisk pokazywany w formacie `ssh-keygen -lf` (`SHA256:…`).
+- Klucz danych (keyring, XChaCha20-Poly1305, wersjonowany) jest losowy; na serwerze leży opakowany kluczem wyprowadzonym z **sekretnej** części klucza SSH (`blake3::derive_key("spoko ssh master v1", seed / skalar / d)`) [moja decyzja]. Świadomie ten sam klucz służy do podpisu (logowanie) i jako materiał KDF — wybór autora.
+- Lokalnie nie ma już żadnego sekretu spoko na dysku: `~/.spoko/identity.bin` trzyma tylko id urządzenia, nazwę, serwer, token sesji i ścieżkę klucza; keyring wyprowadzany przy starcie z klucza SSH.
+- **Klucz z hasłem:** spoko czyta plik klucza bezpośrednio (bez ssh-agent [decyzja autora]). Klucz bez hasła → start bez pytań (jak dotąd: „hasło nigdy przy starcie”). Klucz z hasłem → hasło raz na sesję [decyzja autora]: daemon startuje **zablokowany** (status „zablokowany — spoko unlock”, tray to pokazuje), `spoko unlock` pyta o hasło w terminalu i przekazuje je daemonowi, który odszyfrowuje klucz tylko w pamięci; komendy CLI działające bez daemona pytają same. Daemon nigdy nie pyta i nie restartuje się w pętli.
+- **Klucz odzyskiwania zostaje** [decyzja autora]: generowany przy pierwszym logowaniu konta, opakowuje ten sam keyring. Służy, gdy klucz SSH przepadł: administrator serwera podmienia klucz publiczny konta (`spoko-server account set-key`), a `spoko login --recovery-key …` z nowym kluczem odpakowuje keyring i opakowuje go nowym kluczem SSH [moja decyzja — klucz odzyskiwania tylko deszyfruje, nie loguje].
+- **Wymiana klucza** (wyciek, zmiana): `spoko key rotate --new <plik>` — nowy klucz publiczny podpisany starym i nowym, keyring dostaje nową wersję (nowe dane już nowym kluczem), stary klucz usunięty z konta, sesje pozostałych komputerów unieważnione; te logują się ponownie nowym kluczem. To zastępuje „usunięcie urządzenia → rotacja” [moja decyzja]: przy wspólnym kluczu nie da się odciąć jednego komputera kryptograficznie. `spoko device remove` unieważnia tylko sesję (nie jest granicą bezpieczeństwa).
 - Co widzi serwer: tylko nieprzezroczyste bloby, ich rozmiary i czasy. Nazwy plików, struktura, treść — zaszyfrowane (drzewa są zaszyfrowanymi obiektami). Identyfikatory blobów to klucz-owane hashe (np. HMAC), nie surowe hashe git — żeby nie dało się sprawdzić „czy masz plik X”.
 - Bez własnej kryptografii — tylko sprawdzone biblioteki.
 
@@ -300,9 +304,9 @@ Wymagania:
 - Open source, jedna binarka Rusta; self-host: `docker run` lub binarka + katalog danych [moja decyzja].
 - Metadane: SQLite (self-host); dla hostowanej usługi możliwość Postgresa — za warstwą abstrakcji [moja decyzja].
 - Magazyn blobów: dysk lokalny w MVP; S3-kompatybilny w etapie 2 (razem z usługą hostowaną), za tym samym interfejsem [moja decyzja].
-- MVP [moja decyzja, wynika z „wiele kont to etap 2”]: self-host, konto(a) zakładane komendą administracyjną serwera (`spoko-server account create`), która zwraca token startowy; urządzenia dostają długotrwałe tokeny. Schemat danych zawiera `account_id`, żeby etap 2 nie wymagał migracji architektury.
+- MVP [moja decyzja, wynika z „wiele kont to etap 2”]: self-host, konto(a) zakładane komendą administracyjną serwera z kluczem publicznym SSH (`spoko-server account create <nazwa> --ssh-key "ssh-ed25519 AAAA…"`). Logowanie: serwer wydaje jednorazowe, wygasające wyzwanie, klient podpisuje je kluczem SSH (sshsig, przestrzeń nazw `spoko`), serwer weryfikuje i wydaje urządzeniu długotrwały token sesji [zmiana 2026-10-29]. Schemat danych zawiera `account_id`, żeby etap 2 nie wymagał migracji architektury.
 - Etap 2: rejestracja e-mail + hasło (+ ewentualnie OAuth GitHub), weryfikacja maili, reset hasła, kwoty miejsca, rate limiting, Postgres + S3, backupy, monitoring, billing. Hasło konta służy tylko do logowania — **nie** do szyfrowania danych.
-- Funkcje serwera: przechowywanie zaszyfrowanych blobów, wskaźnik `head` projektu z compare-and-swap, lista snapshotów/urządzeń, rozsyłanie powiadomień (WebSocket, z fallbackiem), skrzynka do parowania urządzeń, przechowanie zaszyfrowanych kopii klucza projektu.
+- Funkcje serwera: przechowywanie zaszyfrowanych blobów, wskaźnik `head` projektu z compare-and-swap, lista snapshotów/urządzeń, rozsyłanie powiadomień (WebSocket, z fallbackiem), przechowanie zaszyfrowanego keyringu konta (opakowanego kluczem SSH i kluczem odzyskiwania).
 - Klient działa z dowolnym serwerem — adres to ustawienie (jak remote w gicie).
 - Billing: po MVP.
 - **Licencja [otwarte]**: MIT/Apache vs AGPL. Przy MIT/Apache każdy może zrobić z serwera konkurencyjną usługę; AGPL zmusza taką usługę do publikowania zmian (typowe w modelu „open source + hosting”). Możliwy też podział: klient MIT/Apache, serwer AGPL.
@@ -311,7 +315,9 @@ Wymagania:
 
 CLI (szkic, nazwy do dopracowania) [moja decyzja]:
 ```
-spoko login [server]           logowanie / rejestracja urządzenia
+spoko login [server] [--key ~/.ssh/id_ed25519] [--recovery-key …]   logowanie kluczem SSH
+spoko unlock                   podaj hasło klucza SSH na tę sesję (gdy klucz ma hasło)
+spoko key rotate --new <plik>  wymiana klucza SSH konta
 spoko init                     dodaj bieżący katalog jako nowy projekt
 spoko clone <projekt> [path]   pobierz istniejący projekt na ten komputer
 spoko status                   stan synchronizacji, konflikty, ostrzeżenia, hooki do wykonania
@@ -320,7 +326,7 @@ spoko log [plik]               historia snapshotów
 spoko restore <plik> --at ...  przywróć wersję
 spoko pause / resume           wstrzymaj synchronizację projektu
 spoko volume push|pull [name]
-spoko device add|approve|list|revoke
+spoko device list|remove
 spoko config check
 spoko daemon [start|stop|install]
 ```
