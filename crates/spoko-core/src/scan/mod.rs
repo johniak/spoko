@@ -11,6 +11,7 @@ pub use statcache::{CacheEntry, RACY_WINDOW_NS, StatCache};
 use crate::filter::{Class, Matcher};
 use crate::platform::{DiskEntry, DiskKind, RelPath, read_entry};
 use crate::store::{Entry, EntryMode, Store, WorkMap};
+use crate::transform::ContentTransform;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScanProblem {
@@ -37,6 +38,7 @@ struct Scanner<'a> {
     store: &'a Store,
     cache: &'a mut StatCache,
     prev: &'a WorkMap,
+    transform: Option<&'a dyn ContentTransform>,
     out: ScanResult,
 }
 
@@ -93,6 +95,11 @@ impl Scanner<'_> {
         let prev = self.prev.get(rel);
         let entry = match &disk.kind {
             DiskKind::Symlink(target) => Entry { oid: self.store.write_blob(target.as_bytes())?, mode: EntryMode::Link },
+            _ if self.transform.is_some_and(|t| t.applies(rel)) => {
+                let bytes = fs::read(rel.to_fs(self.root))?;
+                let t = self.transform.expect("checked");
+                Entry { oid: self.store.write_blob(&t.from_disk(&bytes))?, mode: EntryMode::Blob }
+            }
             _ => {
                 let mut f = fs::File::open(rel.to_fs(self.root))?;
                 let oid = self.store.write_blob_stream(&mut f, disk.size)?;
@@ -115,7 +122,19 @@ impl Scanner<'_> {
 
 /// Walks the whole project.
 pub fn full_scan(root: &Path, matcher: &Matcher, store: &Store, cache: &mut StatCache, prev: &WorkMap) -> crate::Result<ScanResult> {
-    let mut s = Scanner { root, matcher, store, cache, prev, out: ScanResult::default() };
+    full_scan_with(root, matcher, store, cache, prev, None)
+}
+
+/// [`full_scan`] with content rewriting (external directories).
+pub fn full_scan_with(
+    root: &Path,
+    matcher: &Matcher,
+    store: &Store,
+    cache: &mut StatCache,
+    prev: &WorkMap,
+    transform: Option<&dyn ContentTransform>,
+) -> crate::Result<ScanResult> {
+    let mut s = Scanner { root, matcher, store, cache, prev, transform, out: ScanResult::default() };
     s.walk_dir(None)?;
     let out = s.out;
     cache.entries.retain(|p, _| out.work.contains_key(p));
@@ -131,11 +150,23 @@ pub fn incremental_scan(
     prev: &WorkMap,
     dirty: &BTreeSet<RelPath>,
 ) -> crate::Result<ScanResult> {
+    incremental_scan_with(root, matcher, store, cache, prev, dirty, None)
+}
+
+pub fn incremental_scan_with(
+    root: &Path,
+    matcher: &Matcher,
+    store: &Store,
+    cache: &mut StatCache,
+    prev: &WorkMap,
+    dirty: &BTreeSet<RelPath>,
+    transform: Option<&dyn ContentTransform>,
+) -> crate::Result<ScanResult> {
     let mut work = prev.clone();
     for d in dirty {
         work.retain(|p, _| !p.is_within(d));
     }
-    let mut s = Scanner { root, matcher, store, cache, prev, out: ScanResult { work, ..Default::default() } };
+    let mut s = Scanner { root, matcher, store, cache, prev, transform, out: ScanResult { work, ..Default::default() } };
     for d in dirty {
         if !d.components().any(|c| c == ".git") && d.parent().is_none_or(|p| s.ancestors_descend(&p)) {
             s.visit(d)?;

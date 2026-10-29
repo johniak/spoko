@@ -2,11 +2,13 @@
 
 pub mod checkout;
 pub mod config;
+pub mod external;
 pub mod filter;
 pub mod gitstate;
 pub mod merge;
 pub mod platform;
 pub mod store;
+pub mod transform;
 pub mod serde_oid;
 pub mod scan;
 

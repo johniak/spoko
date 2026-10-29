@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::platform::{self, DiskKind, NameProblem, RelPath, SymlinkOutcome, fold_key, read_entry, windows_problem};
 use crate::scan::StatCache;
 use crate::store::{Entry, EntryMode, Store, WorkMap};
+use crate::transform::ContentTransform;
 
 /// Test hook to simulate a crash in the middle of an apply.
 pub trait ApplyFaults {
@@ -20,12 +21,13 @@ pub struct ApplyOpts<'a> {
     pub case_insensitive: bool,
     pub windows_names: bool,
     pub faults: Option<&'a dyn ApplyFaults>,
+    pub transform: Option<&'a dyn ContentTransform>,
 }
 
 impl ApplyOpts<'_> {
     /// Options matching the current platform for `root`.
     pub fn for_root(root: &Path) -> io::Result<ApplyOpts<'static>> {
-        Ok(ApplyOpts { case_insensitive: platform::fs_is_case_insensitive(root)?, windows_names: cfg!(windows), faults: None })
+        Ok(ApplyOpts { case_insensitive: platform::fs_is_case_insensitive(root)?, windows_names: cfg!(windows), faults: None, transform: None })
     }
 }
 
@@ -73,7 +75,7 @@ impl From<git2::Error> for ApplyError {
 }
 
 /// Does the disk at `rel` hold exactly `expected` (or nothing, for `None`)?
-fn disk_matches(root: &Path, cache: &StatCache, rel: &RelPath, expected: Option<&Entry>) -> io::Result<bool> {
+fn disk_matches(root: &Path, cache: &StatCache, rel: &RelPath, expected: Option<&Entry>, transform: Option<&dyn ContentTransform>) -> io::Result<bool> {
     let disk = read_entry(&rel.to_fs(root))?;
     let (disk, expected) = match (disk, expected) {
         (None, None) => return Ok(true),
@@ -89,6 +91,10 @@ fn disk_matches(root: &Path, cache: &StatCache, rel: &RelPath, expected: Option<
     }
     let oid = match &disk.kind {
         DiskKind::Dir => return Ok(false),
+        DiskKind::File if transform.is_some_and(|t| t.applies(rel)) => {
+            let bytes = fs::read(rel.to_fs(root))?;
+            git2::Oid::hash_object(git2::ObjectType::Blob, &transform.expect("checked").from_disk(&bytes))
+        }
         DiskKind::Symlink(t) => git2::Oid::hash_object(git2::ObjectType::Blob, t.as_bytes()),
         DiskKind::File => git2::Oid::hash_file(git2::ObjectType::Blob, rel.to_fs(root)),
     };
@@ -117,7 +123,7 @@ pub fn apply_tree(
 
     let mut conflicts = Vec::new();
     for p in &changed {
-        if !disk_matches(root, cache, p, from.get(*p))? {
+        if !disk_matches(root, cache, p, from.get(*p), opts.transform)? {
             conflicts.push((*p).clone());
         }
     }
@@ -188,6 +194,9 @@ pub fn apply_tree(
                 continue;
             }
             disk
+        } else if let Some(t) = opts.transform.filter(|t| t.applies(p)) {
+            let bytes = t.to_disk(&store.read_blob(entry.oid)?);
+            platform::atomic_write(&abs, &mut bytes.as_slice(), entry.mode == EntryMode::BlobExec)?
         } else {
             platform::atomic_write_with(&abs, entry.mode == EntryMode::BlobExec, &mut |w| {
                 store.copy_blob_to(entry.oid, w).map(|_| ()).map_err(io::Error::other)

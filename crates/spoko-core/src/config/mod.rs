@@ -1,7 +1,7 @@
 mod local;
 mod project;
 
-pub use local::{LocalConfig, LocalProject, spoko_home, spoko_home_from};
+pub use local::{LocalConfig, LocalProject, home_dir, spoko_home, spoko_home_from};
 pub use project::*;
 
 #[derive(Debug, thiserror::Error)]
