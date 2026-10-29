@@ -134,7 +134,6 @@ pub fn incremental_scan(
     let mut work = prev.clone();
     for d in dirty {
         work.retain(|p, _| !p.is_within(d));
-        cache.entries.retain(|p, _| !p.is_within(d));
     }
     let mut s = Scanner { root, matcher, store, cache, prev, out: ScanResult { work, ..Default::default() } };
     for d in dirty {
@@ -142,7 +141,9 @@ pub fn incremental_scan(
             s.visit(d)?;
         }
     }
-    Ok(s.out)
+    let out = s.out;
+    cache.entries.retain(|p, _| out.work.contains_key(p) || !dirty.iter().any(|d| p.is_within(d)));
+    Ok(out)
 }
 
 impl Scanner<'_> {

@@ -53,7 +53,7 @@ fn ino_and_exec(_meta: &fs::Metadata) -> (u64, bool) {
 pub fn read_entry(path: &Path) -> io::Result<Option<DiskEntry>> {
     let meta = match fs::symlink_metadata(path) {
         Ok(m) => m,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) if matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory) => return Ok(None),
         Err(e) => return Err(e),
     };
     let ft = meta.file_type();
@@ -88,13 +88,18 @@ fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
 
 /// Writes via a temp file in the same directory, fsync, then rename over `path`.
 pub fn atomic_write(path: &Path, reader: &mut dyn Read, exec: bool) -> io::Result<DiskEntry> {
+    atomic_write_with(path, exec, &mut |f| io::copy(reader, f).map(|_| ()))
+}
+
+/// [`atomic_write`] where the content is produced by `fill`.
+pub fn atomic_write_with(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<DiskEntry> {
     let dir = path.parent().expect("file has a parent");
     fs::create_dir_all(dir)?;
     let tmp = tmp_path(path);
     let result = (|| {
-        let mut f = fs::File::create(&tmp)?;
-        io::copy(reader, &mut f)?;
-        f.flush()?;
+        let mut f = io::BufWriter::new(fs::File::create(&tmp)?);
+        fill(&mut f)?;
+        let f = f.into_inner().map_err(io::IntoInnerError::into_error)?;
         set_exec(&f, exec)?;
         f.sync_all()?;
         drop(f);
