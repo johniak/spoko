@@ -150,4 +150,12 @@ Crates: `spoko-crypto` (keys, AEAD, ids), `spoko-proto` (wire types), `spoko-ser
 `spoko-core` (scan, store, merge, gitstate, checkout — no network), `spoko-client` (transfer,
 engine, daemon), `spoko-docker`, `spoko` (CLI), `spoko-tray`.
 
-Built with [Claude Code](https://claude.com/claude-code). License: to be decided by the author.
+Built with [Claude Code](https://claude.com/claude-code).
+
+## License
+
+The client side — the `spoko` CLI and daemon, the tray app and the `spoko-crypto`,
+`spoko-proto`, `spoko-core`, `spoko-client` and `spoko-docker` libraries — is
+[MIT](LICENSE). The server (`crates/spoko-server`) is
+[AGPL-3.0-only](crates/spoko-server/LICENSE): run it for yourself freely; if you offer a
+modified server to others over the network, publish your changes.
