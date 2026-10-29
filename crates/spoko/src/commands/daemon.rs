@@ -1,5 +1,4 @@
 use std::io::Write;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -34,7 +33,7 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
                 writeln!(out, "daemon już działa")?;
                 return Ok(());
             }
-            Command::new(std::env::current_exe()?).args(["daemon", "run"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()?;
+            crate::os_glue::spawn_daemon()?;
             wait(ctx, true)?;
             writeln!(out, "daemon uruchomiony")?;
         }
