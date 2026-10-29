@@ -5,12 +5,14 @@ pub mod config;
 pub mod external;
 pub mod filter;
 pub mod gitstate;
+pub mod guard;
 pub mod merge;
 pub mod platform;
 pub mod store;
 pub mod transform;
 pub mod serde_oid;
 pub mod scan;
+pub mod snapshot;
 
 /// Error type shared by the core modules.
 #[derive(Debug, thiserror::Error)]
