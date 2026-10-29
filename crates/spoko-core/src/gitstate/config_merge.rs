@@ -64,7 +64,8 @@ fn quote(v: &str) -> String {
 /// Both machines therefore produce byte-identical files for the same settings (no ping-pong).
 fn canonical(entries: &[(String, String)]) -> Vec<u8> {
     use std::collections::BTreeMap;
-    let mut sections: BTreeMap<(String, Option<String>), BTreeMap<String, Vec<&str>>> = BTreeMap::new();
+    type Vars<'a> = BTreeMap<String, Vec<&'a str>>;
+    let mut sections: BTreeMap<(String, Option<String>), Vars<'_>> = BTreeMap::new();
     for (name, value) in entries {
         let (Some((section, rest)), Some(dot)) = (name.split_once('.'), name.rfind('.')) else { continue };
         let var = &name[dot + 1..];
