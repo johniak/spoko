@@ -28,6 +28,11 @@ pub const ALWAYS_IGNORED: &[&str] = &[
     ".spoko-tmp-*",
     "*.swp",
     "*.swx",
+    "*.swo",
+    "*.swn",
+    // Emacs lock symlinks and autosaves (`#` starts a comment in gitignore syntax)
+    ".#*",
+    "\\#*#",
     "4913",
     "*~",
     "*___jb_tmp___",

@@ -62,6 +62,17 @@ fn always_ignored_ds_store_editor_tmp_and_git() {
 }
 
 #[test]
+fn emacs_locks_and_autosaves_and_vim_extra_swaps_are_ignored() {
+    let (_d, m) = setup("", "");
+    for p in [".#main.rs", "src/.#lib.rs", "#main.rs#", "src/#lib.rs#", "a.swo", "src/b.swn"] {
+        assert_eq!(c(&m, p, false), Class::Ignored, "{p}");
+    }
+    for p in ["#notes", "notes#", "a#b.rs", "issue#12.md"] {
+        assert_eq!(c(&m, p, false), Class::Synced, "{p}");
+    }
+}
+
+#[test]
 fn descend_only_when_include_prefix() {
     let (_d, m) = setup("config/\nnode_modules/\n", "[ignore]\ninclude = [\"config/local.*\", \".env*\"]\n");
     assert!(m.should_descend(&RelPath::new("config")));
