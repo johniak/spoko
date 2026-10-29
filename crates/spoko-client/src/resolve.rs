@@ -62,7 +62,18 @@ pub fn mark_resolved(e: &mut Engine, path: &RelPath) -> Result<()> {
     e.save()
 }
 
+/// Merges `path` with `tool` and marks it resolved when the tool changed it.
 pub fn resolve(e: &mut Engine, path: &RelPath, tool: &MergeTool) -> Result<ResolveOutcome> {
+    let out = merge(e, path, tool)?;
+    if out == ResolveOutcome::Resolved {
+        mark_resolved(e, path)?;
+    }
+    Ok(out)
+}
+
+/// Writes the merge of `path` (conflict markers, or the user's merge tool) without touching
+/// the project's state, so it can run beside the daemon: `Resolved` → the caller marks it.
+pub fn merge(e: &Engine, path: &RelPath, tool: &MergeTool) -> Result<ResolveOutcome> {
     let c = list(e)?.into_iter().find(|c| c.path == key(path)).ok_or_else(|| ClientError::Other(format!("no conflict at {path}")))?;
     let blob = |o: Option<git2::Oid>| -> Result<Vec<u8>> { Ok(o.map(|o| e.store.read_blob(o)).transpose()?.unwrap_or_default()) };
     let (base, remote) = (blob(c.base)?, blob(c.theirs)?);
@@ -95,7 +106,6 @@ pub fn resolve(e: &mut Engine, path: &RelPath, tool: &MergeTool) -> Result<Resol
             if std::fs::read(&merged).unwrap_or_default() == local {
                 return Ok(ResolveOutcome::Unchanged);
             }
-            mark_resolved(e, path)?;
             Ok(ResolveOutcome::Resolved)
         }
     }

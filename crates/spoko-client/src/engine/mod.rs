@@ -204,6 +204,12 @@ impl Engine {
     }
 
     /// Opens an existing local project and removes temp files an interrupted apply may have left.
+    /// Opens a project another process (the daemon) runs, for reading: no crash cleanup,
+    /// which would delete the files of an apply in progress there.
+    pub fn peek(ctx: DeviceCtx, project_id: Uuid, root: &Path) -> Result<Engine> {
+        Engine::load(ctx, project_id, root)
+    }
+
     pub fn open(ctx: DeviceCtx, project_id: Uuid, root: &Path) -> Result<Engine> {
         let e = Engine::load(ctx, project_id, root)?;
         let marker = e.data_dir().join(APPLY_MARKER);

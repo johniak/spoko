@@ -265,3 +265,38 @@ fn daemon_started_before_login_waits_and_says_so() {
     assert!(st.contains("daemon: czeka") && st.contains("spoko login"), "{st}");
     m.ok(&["daemon", "stop"], None);
 }
+
+/// `code --wait` and friends need the user's terminal and environment, not the daemon's.
+#[cfg(unix)]
+#[test]
+fn merge_tool_runs_in_the_cli_process_while_the_daemon_runs() {
+    let srv = spawn_test_server();
+    let (a, b) = (Machine::new(), Machine::new());
+    let rk = recovery_key(&login(&srv, &a, "mac", None));
+    login(&srv, &b, "linux", Some(&rk));
+    let pa = a.path("app");
+    std::fs::create_dir_all(&pa).unwrap();
+    std::fs::write(pa.join("f.txt"), "base\n").unwrap();
+    let id = project_id(&a.ok(&["init"], Some(&pa)));
+    let pb = b.path("app");
+    b.ok(&["clone", &id, pb.to_str().unwrap()], None);
+    std::fs::write(pa.join("f.txt"), "mac\n").unwrap();
+    std::fs::write(pb.join("f.txt"), "linux\n").unwrap();
+    a.ok(&["sync"], Some(&pa));
+    assert!(b.ok(&["sync"], Some(&pb)).contains("konflikty: 1"));
+    let repo = git2::Repository::init(&pb).unwrap();
+    let mut cfg = repo.config().unwrap().open_level(git2::ConfigLevel::Local).unwrap();
+    cfg.set_str("merge.tool", "mine").unwrap();
+    cfg.set_str("mergetool.mine.cmd", "printf '%s\\n' \"$ONLY_IN_MY_SHELL\" > \"$MERGED\"").unwrap();
+    b.ok(&["daemon", "start"], None);
+    let o = b.cmd().args(["resolve", "f.txt"]).current_dir(&pb).env("ONLY_IN_MY_SHELL", "from the terminal").output().unwrap();
+    let out = String::from_utf8_lossy(&o.stdout).into_owned();
+    assert!(o.status.success() && out == "Rozwiązano: f.txt\n", "{out}{}", String::from_utf8_lossy(&o.stderr));
+    assert_eq!(std::fs::read_to_string(pb.join("f.txt")).unwrap(), "from the terminal\n");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !b.ok(&["resolve"], Some(&pb)).contains("Brak konfliktów") {
+        assert!(std::time::Instant::now() < deadline, "the daemon marked it resolved");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    b.ok(&["daemon", "stop"], None);
+}

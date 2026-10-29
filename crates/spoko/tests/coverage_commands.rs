@@ -438,7 +438,7 @@ fn project_commands_go_through_a_running_daemon() {
     assert_eq!(m.ok(&["restore", "notes.txt", "--at", &first], &p), "Przywrócono notes.txt\n");
     assert_eq!(read(&p.join("notes.txt")), "v1\n");
 
-    assert_eq!(m.ok(&["resolve", "notes.txt", "--done"], &p), "ok\n");
+    assert_eq!(m.ok(&["resolve", "notes.txt", "--done"], &p), "Oznaczono jako rozwiązany: notes.txt\n");
     assert_eq!(m.ok(&["hooks", "run"], &p), "Brak oczekujących hooków.\n");
     assert_eq!(m.ok(&["hooks", "dismiss"], &p), "Pominięto oczekujące hooki.\n");
     assert_eq!(m.ok(&["pause"], &p), format!("Wstrzymano synchronizację {}\n", p.display()));

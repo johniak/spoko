@@ -14,7 +14,7 @@ use super::watcher::FsBatch;
 use crate::ClientError;
 use crate::engine::{Engine, PauseReason};
 use crate::history::{self, RestoreFrom};
-use crate::resolve::{self, MergeTool, ResolveOutcome};
+use crate::resolve;
 
 pub enum WorkerMsg {
     Fs(FsBatch),
@@ -198,11 +198,8 @@ impl Worker {
                 Ok(Response::Ok)
             }
             Request::Resolve { path, done: true, .. } => resolve::mark_resolved(&mut self.engine, &RelPath::new(path)).map(|()| Response::Ok),
-            Request::Resolve { path, done: false, .. } => {
-                let tool = MergeTool::from_git_config(&self.engine.root);
-                let out = resolve::resolve(&mut self.engine, &RelPath::new(path), &tool)?;
-                Ok(Response::Text { text: if out == ResolveOutcome::Resolved { "resolved".into() } else { "unchanged".into() } })
-            }
+            // the merge tool needs the user's terminal: the CLI runs it and sends `done`
+            Request::Resolve { done: false, .. } => Err(ClientError::Other("run the merge from the CLI: spoko resolve <file>".into())),
             Request::HooksRun { .. } => crate::hooks::run_pending(&mut self.engine).map(|runs| Response::Hooks { runs }),
             Request::HooksDismiss { .. } => {
                 self.engine.state.pending_hooks.clear();

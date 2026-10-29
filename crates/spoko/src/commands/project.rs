@@ -168,9 +168,10 @@ pub fn status(ctx: &Ctx, json: bool, out: &mut dyn Write) -> Res<()> {
 
 pub fn resolve(ctx: &Ctx, path: Option<String>, done: bool, out: &mut dyn Write) -> Res<()> {
     let (project, root) = ctx.current_project()?;
+    let daemon = ctx.daemon_running();
     let Some(path) = path else {
         let id = ctx.identity()?;
-        let e = Engine::open(ctx.device_ctx(&id), project, &root)?;
+        let e = Engine::peek(ctx.device_ctx(&id), project, &root)?;
         let list = resolve::list(&e)?;
         if list.is_empty() {
             writeln!(out, "Brak konfliktów.")?;
@@ -181,22 +182,33 @@ pub fn resolve(ctx: &Ctx, path: Option<String>, done: bool, out: &mut dyn Write)
         return Ok(());
     };
     let rel = rel_in_project(ctx, &root, &path)?;
-    if let Some(r) = ctx.via_daemon(&Request::Resolve { project, path: rel.to_string(), done })? {
-        writeln!(out, "{}", if let Response::Text { text } = r { text } else { "ok".into() })?;
-        return Ok(());
-    }
-    ctx.with_engine(project, &root, |e| {
-        if done {
-            resolve::mark_resolved(e, &rel)?;
-            writeln!(out, "Oznaczono jako rozwiązany: {rel}")?;
-        } else {
-            match resolve::resolve(e, &rel, &MergeTool::from_git_config(&root))? {
-                ResolveOutcome::Resolved => writeln!(out, "Rozwiązano: {rel}")?,
-                ResolveOutcome::Unchanged => writeln!(out, "Plik zawiera wersje do scalenia; po edycji: spoko resolve {rel} --done")?,
-            }
+    let marked = |out: &mut dyn Write| -> Res<()> { Ok(writeln!(out, "Oznaczono jako rozwiązany: {rel}")?) };
+    if done {
+        if daemon {
+            ctx.via_daemon(&Request::Resolve { project, path: rel.to_string(), done: true })?;
+            return marked(out);
         }
-        Ok(())
-    })
+        ctx.with_engine(project, &root, |e| Ok(resolve::mark_resolved(e, &rel)?))?;
+        return marked(out);
+    }
+    // the merge tool runs here, in the user's terminal and environment; a running daemon only
+    // records the result
+    let outcome = if daemon {
+        let id = ctx.identity()?;
+        let e = Engine::peek(ctx.device_ctx(&id), project, &root)?;
+        let o = resolve::merge(&e, &rel, &MergeTool::from_git_config(&root))?;
+        if o == ResolveOutcome::Resolved {
+            ctx.via_daemon(&Request::Resolve { project, path: rel.to_string(), done: true })?;
+        }
+        o
+    } else {
+        ctx.with_engine(project, &root, |e| Ok(resolve::resolve(e, &rel, &MergeTool::from_git_config(&root))?))?
+    };
+    match outcome {
+        ResolveOutcome::Resolved => writeln!(out, "Rozwiązano: {rel}")?,
+        ResolveOutcome::Unchanged => writeln!(out, "Plik zawiera wersje do scalenia; po edycji: spoko resolve {rel} --done")?,
+    }
+    Ok(())
 }
 
 /// A path argument relative to the current directory, as a project path.
@@ -213,7 +225,7 @@ pub fn log(ctx: &Ctx, path: Option<String>, limit: usize, json: bool, out: &mut 
         Some(Response::Log { entries }) => entries,
         _ => {
             let id = ctx.identity()?;
-            let e = Engine::open(ctx.device_ctx(&id), project, &root)?;
+            let e = Engine::peek(ctx.device_ctx(&id), project, &root)?;
             history::log(&e, rel.as_ref(), limit)?.into_iter().map(|l| LogLine { commit: l.commit.to_string(), time: l.time, device_name: l.device_name, changed: l.changed }).collect()
         }
     };
