@@ -164,6 +164,8 @@ fn ipc_status_roundtrip() {
     assert_eq!(a.text("x"), "1");
     stop_daemon(&a, h);
     assert!(ipc::request(&a.home, &Request::Status).is_err(), "daemon gone");
+    #[cfg(unix)]
+    assert!(!ipc::socket_path(&a.home).parent().unwrap().exists(), "no stale socket directory left behind");
 }
 
 #[test]
@@ -262,6 +264,8 @@ fn locked_daemon_shuts_down_cleanly() {
     let h = start_daemon(&a, project);
     stop_daemon(&a, h);
     assert!(ipc::request(&a.home, &Request::Status).is_err(), "daemon gone");
+    #[cfg(unix)]
+    assert!(!ipc::socket_path(&a.home).parent().unwrap().exists(), "no stale socket directory left behind");
 }
 
 #[cfg(unix)]
@@ -275,7 +279,33 @@ fn ipc_socket_is_owner_only() {
     let h = start_daemon(&a, project);
     let mode = std::fs::metadata(ipc::socket_path(&a.home)).unwrap().permissions().mode();
     assert_eq!(mode & 0o077, 0, "socket mode {mode:o}: a passphrase crosses it");
+    // the socket sits in a directory only this user can enter, not directly in /tmp
+    let dir = ipc::socket_path(&a.home).parent().unwrap().to_path_buf();
+    assert_ne!(dir, std::env::temp_dir());
+    let dmode = std::fs::metadata(&dir).unwrap().permissions().mode();
+    assert_eq!(dmode & 0o077, 0, "socket dir mode {dmode:o}");
+    // a directory others could have put a socket into is not trusted
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let err = ipc::request(&a.home, &Request::Status).unwrap_err().to_string();
+    assert!(err.contains("not private"), "{err}");
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     stop_daemon(&a, h);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_socket_directory_squatted_before_the_daemon_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+    let home = tempfile::tempdir().unwrap();
+    let dir = ipc::socket_path(home.path()).parent().unwrap().to_path_buf();
+    // someone else got there first: a world-writable directory (cannot chown in a test)
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+    // the daemon owns it here, so it takes it back; it never listens inside an open directory
+    let l = ipc::listen(home.path()).unwrap();
+    assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+    drop(l);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

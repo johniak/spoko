@@ -156,7 +156,10 @@ fn serve_projects(home: &Path, identity: &Identity, ctx: &DeviceCtx, listener: &
 }
 
 fn remove_socket(home: &Path) -> Result<()> {
-    let _ = std::fs::remove_file(ipc::socket_path(home));
+    let path = ipc::socket_path(home);
+    let _ = std::fs::remove_file(&path);
+    #[cfg(unix)]
+    let _ = path.parent().map(std::fs::remove_dir);
     Ok(())
 }
 
