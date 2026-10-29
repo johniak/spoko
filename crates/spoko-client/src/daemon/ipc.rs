@@ -5,7 +5,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use interprocess::local_socket::prelude::*;
-use interprocess::local_socket::{GenericFilePath, GenericNamespaced, ListenerOptions, Name, Stream};
+use interprocess::local_socket::{ListenerOptions, Name, Stream};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -125,12 +125,16 @@ pub fn socket_path(home: &Path) -> PathBuf {
     std::env::temp_dir().join(format!("spoko-{:016x}.sock", fnv(&home.to_string_lossy())))
 }
 
+#[cfg(windows)]
 fn name(home: &Path) -> std::io::Result<Name<'static>> {
-    if cfg!(windows) {
-        format!("spoko-{:016x}", fnv(&home.to_string_lossy())).to_ns_name::<GenericNamespaced>()
-    } else {
-        socket_path(home).to_fs_name::<GenericFilePath>()
-    }
+    use interprocess::local_socket::GenericNamespaced;
+    format!("spoko-{:016x}", fnv(&home.to_string_lossy())).to_ns_name::<GenericNamespaced>()
+}
+
+#[cfg(not(windows))]
+fn name(home: &Path) -> std::io::Result<Name<'static>> {
+    use interprocess::local_socket::GenericFilePath;
+    socket_path(home).to_fs_name::<GenericFilePath>()
 }
 
 pub fn listen(home: &Path) -> Result<interprocess::local_socket::Listener> {

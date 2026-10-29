@@ -73,17 +73,23 @@ fn tmp_path(path: &Path) -> PathBuf {
 }
 
 /// Retries transient Windows sharing violations (file open in an editor / indexer).
+#[cfg(windows)]
 fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     let mut attempt = 0;
     loop {
         match op() {
-            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::PermissionDenied && attempt < 5 => {
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied && attempt < 5 => {
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
             other => return other,
         }
     }
+}
+
+#[cfg(not(windows))]
+fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
+    op()
 }
 
 /// Puts the file's data on the drive. On Apple `sync_all` is `F_FULLFSYNC` (~5 ms: it flushes

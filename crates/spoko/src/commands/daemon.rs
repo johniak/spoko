@@ -10,7 +10,6 @@ use spoko_client::os_glue::{autostart, notify_native::NativeNotifier};
 
 use super::{Ctx, PrintNotifier, Res, err};
 use crate::cli::DaemonCmd;
-use crate::docker_ext::DockerExt;
 
 fn wait(ctx: &Ctx, running: bool) -> Res<()> {
     let end = Instant::now() + Duration::from_secs(15);
@@ -27,7 +26,7 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
     match cmd.unwrap_or(DaemonCmd::Run) {
         DaemonCmd::Run => {
             let notifier: Arc<dyn Notifier> = if std::env::var_os("SPOKO_NO_DESKTOP_NOTIFY").is_some() { Arc::new(PrintNotifier) } else { Arc::new(NativeNotifier) };
-            let opts = DaemonOpts { ext: Arc::new(DockerExt), notifier, env: ctx.env.clone(), rescan_every: Duration::from_secs(300) };
+            let opts = DaemonOpts { ext: Arc::new(crate::os_glue::docker_ext()), notifier, env: ctx.env.clone(), rescan_every: Duration::from_secs(300) };
             daemon::run(&ctx.home, opts)?;
         }
         DaemonCmd::Start => {

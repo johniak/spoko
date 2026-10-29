@@ -18,14 +18,14 @@ pub enum Os {
 }
 
 impl Os {
+    // `#[cfg]`, not `cfg!`: each platform compiles (and covers) only its own line
     pub fn current() -> Os {
-        if cfg!(target_os = "macos") {
-            Os::Macos
-        } else if cfg!(windows) {
-            Os::Windows
-        } else {
-            Os::Linux
-        }
+        #[cfg(target_os = "macos")]
+        return Os::Macos;
+        #[cfg(windows)]
+        return Os::Windows;
+        #[cfg(not(any(target_os = "macos", windows)))]
+        Os::Linux
     }
 }
 

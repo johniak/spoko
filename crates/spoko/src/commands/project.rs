@@ -277,7 +277,7 @@ pub fn volume(ctx: &Ctx, cmd: VolumeCmd, out: &mut dyn Write) -> Res<()> {
     let text = match ctx.via_daemon(&req)? {
         Some(Response::Text { text }) => text,
         Some(_) => "ok".into(),
-        None => ctx.with_engine(project, &root, |e| Ok(crate::docker_ext::run_volumes(e, name.as_deref(), pull)?))?,
+        None => ctx.with_engine(project, &root, |e| Ok(crate::os_glue::docker_ext().run_volumes(e, name.as_deref(), pull)?))?,
     };
     writeln!(out, "{text}")?;
     Ok(())

@@ -3,3 +3,4 @@
 pub mod cli;
 pub mod commands;
 pub mod docker_ext;
+pub mod os_glue;

@@ -1,13 +1,34 @@
 //! Wires Docker volume sync into the daemon.
 
+use std::sync::Arc;
+
 use spoko_client::daemon::Extensions;
 use spoko_client::daemon::ipc::{Request, Response};
 use spoko_client::engine::Engine;
 use spoko_core::config::VolumeCfg;
-use spoko_docker::bollard_api::BollardApi;
+use spoko_docker::api::DockerApi;
 use spoko_docker::volume::{self, PullOutcome, VolumeCtx};
 
-pub struct DockerExt;
+/// Opens a Docker connection when a volume operation needs one.
+pub type Connect = Arc<dyn Fn() -> spoko_docker::Result<Arc<dyn DockerApi>> + Send + Sync>;
+
+pub struct DockerExt {
+    connect: Connect,
+}
+
+impl DockerExt {
+    pub fn with(connect: Connect) -> DockerExt {
+        DockerExt { connect }
+    }
+
+    /// Push (`pull = None`) or pull (`Some((force, fresh))`) of the selected volumes; one line per volume.
+    pub fn run_volumes(&self, e: &Engine, name: Option<&str>, pull: Option<(bool, bool)>) -> spoko_docker::Result<String> {
+        if selected(e, name).is_empty() {
+            return Err(spoko_docker::Error::Other("brak takich wolumenów w .spokoconfig ([[docker.volume]])".into()));
+        }
+        run_volumes_with(&*(self.connect)()?, e, name, pull)
+    }
+}
 
 /// Compose's project name for a directory (lowercase, `[a-z0-9_-]`).
 pub fn compose_project(e: &Engine) -> String {
@@ -19,16 +40,11 @@ pub fn selected<'a>(e: &'a Engine, name: Option<&str>) -> Vec<&'a VolumeCfg> {
     e.config().docker.volume.iter().filter(|v| name.is_none_or(|n| n == v.name)).collect()
 }
 
-/// Push (`pull = None`) or pull (`Some((force, fresh))`) of the selected volumes; one line per volume.
-pub fn run_volumes(e: &Engine, name: Option<&str>, pull: Option<(bool, bool)>) -> spoko_docker::Result<String> {
+fn run_volumes_with(docker: &dyn DockerApi, e: &Engine, name: Option<&str>, pull: Option<(bool, bool)>) -> spoko_docker::Result<String> {
     let vols = selected(e, name);
-    if vols.is_empty() {
-        return Err(spoko_docker::Error::Other("brak takich wolumenów w .spokoconfig ([[docker.volume]])".into()));
-    }
-    let docker = BollardApi::connect()?;
     let hint = compose_project(e);
     let ctx = VolumeCtx {
-        docker: &docker,
+        docker,
         api: &e.ctx.api,
         keyring: &e.ctx.keyring,
         project: e.project_id,
@@ -64,7 +80,7 @@ pub fn run_volumes(e: &Engine, name: Option<&str>, pull: Option<(bool, bool)>) -
 impl Extensions for DockerExt {
     fn on_message(&self, e: &mut Engine, payload: &[u8]) {
         let Some(cfg) = volume::requested_volume(&e.ctx.keyring, payload, &e.config().docker.volume).cloned() else { return };
-        let _ = run_volumes(e, Some(&cfg.name), None);
+        let _ = self.run_volumes(e, Some(&cfg.name), None);
     }
 
     fn on_local_activity(&self, e: &mut Engine) {
@@ -75,8 +91,8 @@ impl Extensions for DockerExt {
 
     fn handle(&self, e: &mut Engine, req: &Request) -> Option<Response> {
         let r = match req {
-            Request::VolumePush { volume, .. } => run_volumes(e, volume.as_deref(), None),
-            Request::VolumePull { volume, force, fresh, .. } => run_volumes(e, volume.as_deref(), Some((*force, *fresh))),
+            Request::VolumePush { volume, .. } => self.run_volumes(e, volume.as_deref(), None),
+            Request::VolumePull { volume, force, fresh, .. } => self.run_volumes(e, volume.as_deref(), Some((*force, *fresh))),
             _ => return None,
         };
         Some(match r {
