@@ -112,7 +112,7 @@ impl Scanner<'_> {
                     None => self.store.write_blob_stream(&mut fs::File::open(rel.to_fs(self.root))?, disk.size)?,
                 };
                 let placeholder = self.cache.entries.get(rel).is_some_and(|c| c.symlink_placeholder);
-                let exec = if cfg!(windows) { prev.is_some_and(|p| p.mode == EntryMode::BlobExec) } else { disk.exec };
+                let exec = exec_bit(prev, disk);
                 let mode = if placeholder && prev.is_some_and(|p| p.mode == EntryMode::Link && p.oid == oid) {
                     EntryMode::Link
                 } else if exec {
@@ -126,6 +126,17 @@ impl Scanner<'_> {
         self.cache.record(rel, disk, entry);
         Ok(entry)
     }
+}
+
+/// Windows has no exec bit on disk: keep the snapshot's.
+#[cfg(windows)]
+fn exec_bit(prev: Option<&Entry>, _disk: &DiskEntry) -> bool {
+    prev.is_some_and(|p| p.mode == EntryMode::BlobExec)
+}
+
+#[cfg(not(windows))]
+fn exec_bit(_prev: Option<&Entry>, disk: &DiskEntry) -> bool {
+    disk.exec
 }
 
 /// Walks the whole project.

@@ -44,7 +44,7 @@ pub fn encode<'a>(objects: impl ExactSizeIterator<Item = (ObjectType, &'a [u8])>
 /// Indexes and stores the pack in `odb` (`objects/pack/pack-*.{pack,idx}`).
 pub fn write(odb: &Odb<'_>, pack: &[u8]) -> Result<(), git2::Error> {
     let mut w = odb.packwriter()?;
-    w.write_all(pack).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+    w.write_all(pack).map_err(super::io_err)?;
     w.commit()?;
     Ok(())
 }

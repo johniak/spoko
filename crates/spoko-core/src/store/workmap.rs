@@ -17,13 +17,13 @@ pub enum EntryMode {
 }
 
 impl EntryMode {
-    fn from_raw(mode: i32) -> Option<EntryMode> {
+    /// Mode of a non-tree entry; libgit2 normalizes every other blob mode (100664 …) to 100644.
+    fn from_raw(mode: i32) -> EntryMode {
         match mode {
-            0o100644 | 0o100664 => Some(EntryMode::Blob),
-            0o100755 => Some(EntryMode::BlobExec),
-            0o120000 => Some(EntryMode::Link),
-            0o160000 => Some(EntryMode::Commit),
-            _ => None,
+            0o100755 => EntryMode::BlobExec,
+            0o120000 => EntryMode::Link,
+            0o160000 => EntryMode::Commit,
+            _ => EntryMode::Blob,
         }
     }
 }
@@ -121,9 +121,9 @@ pub fn read_tree(repo: &Repository, tree: Oid) -> Result<WorkMap, git2::Error> {
     let mut out = WorkMap::default();
     tree.walk(TreeWalkMode::PreOrder, |dir, e| {
         if e.kind() != Some(ObjectType::Tree)
-            && let (Ok(name), Some(mode)) = (e.name(), EntryMode::from_raw(e.filemode()))
+            && let Ok(name) = e.name()
         {
-            out.insert(RelPath::new(&format!("{dir}{name}")), Entry { oid: e.id(), mode });
+            out.insert(RelPath::new(&format!("{dir}{name}")), Entry { oid: e.id(), mode: EntryMode::from_raw(e.filemode()) });
         }
         TreeWalkResult::Ok
     })?;

@@ -41,7 +41,8 @@ pub fn merge_gitstate(base: Option<&GitState>, ours: &GitState, theirs: &GitStat
             _ if t == b => o.or(t.filter(|_| b.is_none())),
             (Some(_), None) => o,
             (None, Some(_)) => t,
-            (Some(_), Some(_)) => {
+            // both changed it differently ((None, None) is `o == t` above)
+            _ => {
                 let (keep, other) = (newer.refs[name], older.refs[name]);
                 if name.starts_with("refs/heads/") {
                     let split_as = format!("{name}-{}", device_slug(older_device));
@@ -50,7 +51,6 @@ pub fn merge_gitstate(base: Option<&GitState>, ours: &GitState, theirs: &GitStat
                 }
                 Some(&newer.refs[name])
             }
-            (None, None) => None,
         };
         if let Some(oid) = pick {
             refs.insert(name.clone(), *oid);

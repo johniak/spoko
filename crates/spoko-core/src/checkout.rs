@@ -6,7 +6,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::platform::{self, DiskEntry, DiskKind, NameProblem, RelPath, SymlinkOutcome, fold_key, read_entry, windows_problem};
+use crate::platform::{self, DiskEntry, DiskKind, NameProblem, RelPath, fold_key, read_entry, windows_problem};
+#[cfg(windows)]
+use crate::platform::SymlinkOutcome;
 use crate::scan::StatCache;
 use crate::store::{Entry, EntryMode, Store, WorkMap};
 use crate::transform::ContentTransform;
@@ -250,9 +252,11 @@ pub fn apply_tree(
         index += 1;
         let disk = if entry.mode == EntryMode::Link {
             let target = String::from_utf8_lossy(&store.read_blob(entry.oid)?).into_owned();
-            let outcome = platform::write_symlink(&abs, &target)?;
+            let _outcome = platform::write_symlink(&abs, &target)?;
             let disk = read_entry(&abs)?.expect("just written");
-            if outcome == SymlinkOutcome::Placeholder {
+            // symlinks become placeholder files only on Windows without the privilege
+            #[cfg(windows)]
+            if _outcome == SymlinkOutcome::Placeholder {
                 cache.record_placeholder(p, &disk, entry);
                 report.written.push((*p).clone());
                 continue;

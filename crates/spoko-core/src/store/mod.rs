@@ -18,6 +18,8 @@ pub struct Store {
     pending: RefCell<Option<Pending>>,
     /// Trees known to be stored: rebuilding an unchanged directory skips the odb lookup.
     trees: RefCell<std::collections::HashSet<Oid>>,
+    /// Size at which `trees` is forgotten and refilled (bounds a long-running daemon's memory).
+    tree_cap: usize,
 }
 
 #[derive(Default)]
@@ -35,7 +37,7 @@ const BATCH_FLUSH_BYTES: usize = 64 << 20;
 /// Fewer pending objects than this are written loose (no tiny packs piling up).
 const PACK_MIN_OBJECTS: usize = 64;
 
-fn io_err(e: &io::Error) -> git2::Error {
+pub(crate) fn io_err(e: io::Error) -> git2::Error {
     git2::Error::from_str(&e.to_string())
 }
 
@@ -51,7 +53,12 @@ impl Store {
                 r
             }
         };
-        Ok(Store { repo, pending: RefCell::new(None), trees: RefCell::default() })
+        Ok(Store { repo, pending: RefCell::new(None), trees: RefCell::default(), tree_cap: 1 << 20 })
+    }
+
+    /// Bounds the set of trees remembered as stored (default 2^20).
+    pub fn limit_tree_cache(&mut self, cap: usize) {
+        self.tree_cap = cap;
     }
 
     pub fn repo(&self) -> &Repository {
@@ -113,7 +120,7 @@ impl Store {
     fn remember_tree(&self, kind: ObjectType, oid: Oid) {
         if kind == ObjectType::Tree {
             let mut t = self.trees.borrow_mut();
-            if t.len() >= 1 << 20 {
+            if t.len() >= self.tree_cap {
                 t.clear();
             }
             t.insert(oid);
@@ -165,20 +172,20 @@ impl Store {
     pub fn write_blob_stream(&self, reader: &mut dyn Read, size: u64) -> Result<Oid, git2::Error> {
         if size <= BATCH_OBJECT_MAX && self.pending.borrow().is_some() {
             let mut buf = Vec::with_capacity(usize::try_from(size).unwrap_or(0));
-            reader.take(size).read_to_end(&mut buf).map_err(|e| io_err(&e))?;
+            reader.take(size).read_to_end(&mut buf).map_err(io_err)?;
             if buf.len() as u64 != size {
                 return Err(git2::Error::from_str("file changed while reading"));
             }
             return self.write_blob(&buf);
         }
         let odb = self.repo.odb()?;
-        let len = usize::try_from(size).map_err(|_| git2::Error::from_str("blob too large"))?;
-        let mut w = odb.writer(len, ObjectType::Blob)?;
-        let copied = io::copy(&mut reader.take(size), &mut w).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+        // a size beyond the address space (32-bit) makes libgit2 refuse the writer
+        let mut w = odb.writer(usize::try_from(size).unwrap_or(usize::MAX), ObjectType::Blob)?;
+        let copied = io::copy(&mut reader.take(size), &mut w).map_err(io_err)?;
         if copied != size {
             return Err(git2::Error::from_str("file changed while reading"));
         }
-        w.flush().map_err(|e| git2::Error::from_str(&e.to_string()))?;
+        // OdbWriter buffers nothing itself (its flush is a no-op): finalize writes the object
         w.finalize()
     }
 
@@ -199,14 +206,14 @@ impl Store {
     /// Streams a blob into `out`. Big blobs are loose (streamable); packed ones are small.
     pub fn copy_blob_to(&self, oid: Oid, out: &mut dyn Write) -> Result<u64, git2::Error> {
         if let Some(r) = self.pending_get(oid, |_, d| out.write_all(d).map(|()| d.len() as u64)) {
-            return r.map_err(|e| io_err(&e));
+            return r.map_err(io_err);
         }
         let odb = self.repo.odb()?;
         match odb.reader(oid) {
-            Ok((mut reader, _, _)) => io::copy(&mut reader, out).map_err(|e| io_err(&e)),
+            Ok((mut reader, _, _)) => io::copy(&mut reader, out).map_err(io_err),
             Err(_) => {
                 let o = odb.read(oid)?;
-                out.write_all(o.data()).map_err(|e| io_err(&e))?;
+                out.write_all(o.data()).map_err(io_err)?;
                 Ok(o.data().len() as u64)
             }
         }

@@ -179,3 +179,25 @@ fn reading_a_tree_with_a_missing_subtree_fails() {
     let tree = s.build_tree(&w).unwrap();
     assert_eq!(s.read_tree(tree).unwrap_err().code(), git2::ErrorCode::NotFound);
 }
+
+#[test]
+fn forgetting_remembered_trees_keeps_trees_correct_and_deduplicated() {
+    let d = tempfile::tempdir().unwrap();
+    let mut store = spoko_core::store::Store::open_or_init(&d.path().join("s.git")).unwrap();
+    store.limit_tree_cache(2);
+    let mut w = spoko_core::store::WorkMap::default();
+    for i in 0..5 {
+        let oid = store.write_blob(format!("{i}").as_bytes()).unwrap();
+        w.insert(spoko_core::platform::RelPath::new(&format!("d{i}/f")), spoko_core::store::Entry { oid, mode: spoko_core::store::EntryMode::Blob });
+    }
+    let first = store.build_tree(&w).unwrap();
+    let objects = || walkdir_count(&d.path().join("s.git/objects"));
+    let before = objects();
+    assert_eq!(store.build_tree(&w).unwrap(), first, "6 trees through a cache of 2: same root");
+    assert_eq!(objects(), before, "nothing rewritten after the cache was emptied");
+    assert_eq!(store.read_tree(first).unwrap(), w);
+}
+
+fn walkdir_count(p: &std::path::Path) -> usize {
+    std::fs::read_dir(p).unwrap().filter_map(Result::ok).map(|e| if e.path().is_dir() { walkdir_count(&e.path()) } else { 1 }).sum()
+}
