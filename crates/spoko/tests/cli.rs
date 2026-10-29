@@ -74,6 +74,9 @@ fn login_bootstrap_prints_recovery_key() {
     assert!(m2.ok(&["device", "list"], None).contains("linux"));
     let (ok, _, err) = m.run(&["login", &srv.url, "--token", "bogus", "--name", "x"], None);
     assert!(!ok && err.contains("błąd"), "{err}");
+    // base64url tokens may start with '-': must reach the server, not the argument parser
+    let (ok, _, err) = m.run(&["login", &srv.url, "--token", "-mXF5i2P", "--name", "x"], None);
+    assert!(!ok && err.contains("błąd") && !err.contains("unexpected argument"), "{err}");
 }
 
 #[test]

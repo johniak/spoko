@@ -18,9 +18,10 @@ pub enum Cmd {
     /// Zaloguj ten komputer (z tokenem: pierwsze urządzenie / odzyskiwanie; bez: parowanie).
     Login {
         server: String,
-        #[arg(long)]
+        // tokens are base64url and may start with '-'
+        #[arg(long, allow_hyphen_values = true)]
         token: Option<String>,
-        #[arg(long)]
+        #[arg(long, allow_hyphen_values = true)]
         recovery_key: Option<String>,
         #[arg(long)]
         name: Option<String>,
@@ -94,7 +95,12 @@ pub enum DeviceCmd {
     /// Sparuj ten komputer z kontem (zatwierdzenie na innym urządzeniu).
     Add { server: String, #[arg(long)] name: Option<String> },
     /// Zatwierdź parowanie kodem pokazanym na nowym urządzeniu.
-    Approve { code: String, #[arg(long)] yes: bool },
+    Approve {
+        #[arg(allow_hyphen_values = true)]
+        code: String,
+        #[arg(long)]
+        yes: bool,
+    },
     List { #[arg(long)] json: bool },
     /// Odbierz dostęp (rotuje klucz, wypisuje nowy klucz odzyskiwania).
     Revoke { device: String },
