@@ -57,7 +57,7 @@ impl ProjectState {
 
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        spoko_core::platform::atomic_write(path, &mut bytes.as_slice(), false)?;
+        spoko_core::platform::atomic_write_barrier(path, &bytes)?;
         Ok(())
     }
 }

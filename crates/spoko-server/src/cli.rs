@@ -76,7 +76,7 @@ pub fn run_cli(args: impl IntoIterator<Item = String>, out: &mut dyn Write) -> C
 /// Runs the server until `shutdown` resolves.
 pub fn serve(data: &Path, listen: &str, shutdown: impl Future<Output = ()> + Send + 'static) -> CliResult {
     let addr: SocketAddr = listen.parse()?;
-    let state = Arc::new(AppState { db: open_db(data)?, blobs: BlobStore::new(data.join("blobs")), hub: Hub::default() });
+    let state = Arc::new(AppState { db: open_db(data)?, blobs: BlobStore::open(&data.join("blobs"))?, hub: Hub::default() });
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(addr).await?;

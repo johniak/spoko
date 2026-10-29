@@ -86,9 +86,27 @@ fn with_retry(mut op: impl FnMut() -> io::Result<()>) -> io::Result<()> {
     }
 }
 
+/// Puts the file's data on the drive. On Apple `sync_all` is `F_FULLFSYNC` (~5 ms: it flushes
+/// the whole drive cache), which would make a 100k-file checkout take minutes; plain `fsync`
+/// orders the data before the rename, and the `F_FULLFSYNC` of the state file saved after an
+/// apply is the barrier that flushes the drive cache.
+fn durable(f: &fs::File) -> io::Result<()> {
+    #[cfg(target_vendor = "apple")]
+    return rustix::fs::fsync(f).map_err(io::Error::from);
+    #[cfg(not(target_vendor = "apple"))]
+    f.sync_all()
+}
+
 /// Writes via a temp file in the same directory, fsync, then rename over `path`.
 pub fn atomic_write(path: &Path, reader: &mut dyn Read, exec: bool) -> io::Result<DiskEntry> {
     atomic_write_with(path, exec, &mut |f| io::copy(reader, f).map(|_| ()))
+}
+
+/// [`atomic_write`] that also flushes the drive cache (`F_FULLFSYNC` on Apple): a barrier making
+/// every earlier write durable too. For state files that record what was applied.
+pub fn atomic_write_barrier(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    atomic_write(path, &mut &bytes[..], false)?;
+    fs::File::open(path)?.sync_all()
 }
 
 /// [`atomic_write`] where the content is produced by `fill`.
@@ -101,7 +119,7 @@ pub fn atomic_write_with(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn 
         fill(&mut f)?;
         let f = f.into_inner().map_err(io::IntoInnerError::into_error)?;
         set_exec(&f, exec)?;
-        f.sync_all()?;
+        durable(&f)?;
         drop(f);
         with_retry(|| fs::rename(&tmp, path))
     })();

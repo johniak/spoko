@@ -39,13 +39,23 @@ pub fn fetch_closure(
     kr: &Keyring,
     roots: &[Oid],
 ) -> Result<DownloadStats> {
+    // small objects are collected into packfiles; big blobs stream to loose files
+    store.batch(|| fetch_closure_inner(store, server, kr, roots))
+}
+
+fn fetch_closure_inner(
+    store: &Store,
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    roots: &[Oid],
+) -> Result<DownloadStats> {
     let odb = store.repo().odb()?;
     let mut stats = DownloadStats::default();
     let mut pending: HashMap<Oid, (ObjectType, Vec<u8>, Role)> = HashMap::new();
     let mut seen: HashSet<Oid> = HashSet::new();
     let mut frontier: Vec<(Oid, Role, bool)> = roots
         .iter()
-        .filter(|o| !odb.exists(**o))
+        .filter(|o| !store.has(**o))
         .map(|o| (*o, Role::Snapshot, true))
         .collect();
     while !frontier.is_empty() {
@@ -103,11 +113,11 @@ pub fn fetch_closure(
                 role
             };
             if kind == ObjectType::Blob {
-                odb.write(kind, &data)?;
+                store.write_raw(kind, &data)?;
                 continue;
             }
             for d in deps(kind, role, &data) {
-                if !odb.exists(d.0) && !seen.contains(&d.0) {
+                if !store.has(d.0) && !seen.contains(&d.0) {
                     next.push(d);
                 }
             }
@@ -122,7 +132,7 @@ pub fn fetch_closure(
             continue;
         };
         if expanded {
-            odb.write(*kind, data)?;
+            store.write_raw(*kind, data)?;
             pending.remove(&oid);
             continue;
         }

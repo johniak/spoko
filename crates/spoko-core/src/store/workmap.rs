@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ops::{Deref, DerefMut};
 
-use git2::{FileMode, ObjectType, Oid, Repository, TreeWalkMode, TreeWalkResult};
+use git2::{ObjectType, Oid, Repository, TreeWalkMode, TreeWalkResult};
 
 use crate::platform::RelPath;
 
@@ -17,16 +17,6 @@ pub enum EntryMode {
 }
 
 impl EntryMode {
-    fn file_mode(self) -> FileMode {
-        match self {
-            EntryMode::Blob => FileMode::Blob,
-            EntryMode::BlobExec => FileMode::BlobExecutable,
-            EntryMode::Link => FileMode::Link,
-            EntryMode::Commit => FileMode::Commit,
-            EntryMode::Tree => FileMode::Tree,
-        }
-    }
-
     fn from_raw(mode: i32) -> Option<EntryMode> {
         match mode {
             0o100644 | 0o100664 => Some(EntryMode::Blob),
@@ -78,23 +68,50 @@ fn insert(dir: &mut BTreeMap<String, Node>, comps: &[&str], entry: Entry) {
     }
 }
 
-fn write_dir(repo: &Repository, dir: &BTreeMap<String, Node>) -> Result<Oid, git2::Error> {
-    let mut tb = repo.treebuilder(None)?;
-    for (name, node) in dir {
-        match node {
-            Node::Leaf(e) => tb.insert(name, e.oid, e.mode.file_mode().into())?,
-            Node::Dir(d) => tb.insert(name, write_dir(repo, d)?, FileMode::Tree.into())?,
-        };
+impl EntryMode {
+    fn octal(self) -> &'static [u8] {
+        match self {
+            EntryMode::Blob => b"100644",
+            EntryMode::BlobExec => b"100755",
+            EntryMode::Link => b"120000",
+            EntryMode::Commit => b"160000",
+            EntryMode::Tree => b"40000",
+        }
     }
-    tb.write()
 }
 
-pub fn build_tree(repo: &Repository, work: &WorkMap) -> Result<Oid, git2::Error> {
+/// Canonical git tree bytes; entries sorted as git does (a directory sorts as `name/`).
+fn write_dir(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, dir: &BTreeMap<String, Node>) -> Result<Oid, git2::Error> {
+    let mut entries: Vec<(Vec<u8>, &str, EntryMode, Oid)> = Vec::with_capacity(dir.len());
+    for (name, node) in dir {
+        let (mode, oid) = match node {
+            Node::Leaf(e) => (e.mode, e.oid),
+            Node::Dir(d) => (EntryMode::Tree, write_dir(write, d)?),
+        };
+        let mut key = name.as_bytes().to_vec();
+        if mode == EntryMode::Tree {
+            key.push(b'/');
+        }
+        entries.push((key, name, mode, oid));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut buf = Vec::with_capacity(entries.len() * 40);
+    for (_, name, mode, oid) in entries {
+        buf.extend_from_slice(mode.octal());
+        buf.push(b' ');
+        buf.extend_from_slice(name.as_bytes());
+        buf.push(0);
+        buf.extend_from_slice(oid.as_bytes());
+    }
+    write(&buf)
+}
+
+pub fn build_tree(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, work: &WorkMap) -> Result<Oid, git2::Error> {
     let mut root = BTreeMap::new();
     for (path, entry) in work.iter() {
         insert(&mut root, &path.components().collect::<Vec<_>>(), *entry);
     }
-    write_dir(repo, &root)
+    write_dir(write, &root)
 }
 
 pub fn read_tree(repo: &Repository, tree: Oid) -> Result<WorkMap, git2::Error> {

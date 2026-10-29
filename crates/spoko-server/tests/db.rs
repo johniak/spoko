@@ -132,7 +132,7 @@ fn migrations_reopen_keeps_data() {
 #[test]
 fn blobstore_put_get_exists_idempotent() {
     let dir = tempfile::tempdir().unwrap();
-    let store = BlobStore::new(dir.path().join("blobs"));
+    let store = BlobStore::open(&dir.path().join("blobs")).unwrap();
     let p = Uuid::new_v4();
     let id = ObjectId([0xab; 32]);
     assert!(!store.exists(p, &id));
@@ -231,13 +231,49 @@ fn open_fails_on_directory_path() {
 #[test]
 fn blobstore_surfaces_io_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let store = BlobStore::new(dir.path().to_path_buf());
+    let store = BlobStore::open(dir.path()).unwrap();
     let p = Uuid::new_v4();
     let id = ObjectId([0xcd; 32]);
-    let hex = id.to_string();
-    std::fs::create_dir_all(dir.path().join(p.to_string()).join(&hex[..2]).join(&hex[2..])).unwrap();
+    store.put(p, &id, b"x").unwrap();
+    // the pack vanished under the index
+    for e in std::fs::read_dir(dir.path().join(p.to_string())).unwrap() {
+        std::fs::remove_file(e.unwrap().path()).unwrap();
+    }
     assert!(store.get(p, &id).is_err());
-    let id2 = ObjectId([0xce; 32]);
-    std::fs::write(dir.path().join(p.to_string()).join("ce"), b"file blocks dir").unwrap();
-    assert!(store.put(p, &id2, b"x").is_err());
+    // the project directory cannot be created
+    let p2 = Uuid::new_v4();
+    std::fs::write(dir.path().join(p2.to_string()), b"file blocks dir").unwrap();
+    assert!(store.put(p2, &ObjectId([1; 32]), b"x").is_err());
+    // unusable root
+    let file = dir.path().join("plain-file");
+    std::fs::write(&file, b"").unwrap();
+    assert!(BlobStore::open(&file).is_err());
+}
+
+#[test]
+fn blobstore_batches_dedup_and_keep_order() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = BlobStore::open(dir.path()).unwrap();
+    let p = Uuid::new_v4();
+    let items: Vec<(ObjectId, Vec<u8>)> = (0..1000u32).map(|i| (ObjectId([(i % 251) as u8; 32]).with_suffix(i), i.to_le_bytes().to_vec())).collect();
+    assert_eq!(store.put_batch(p, &items).unwrap(), 1000);
+    assert_eq!(store.put_batch(p, &items).unwrap(), 0, "second upload stores nothing");
+    let packs = std::fs::read_dir(dir.path().join(p.to_string())).unwrap().count();
+    assert_eq!(packs, 1, "one pack (one fsync) per batch");
+    let want: Vec<ObjectId> = items.iter().rev().take(10).map(|(i, _)| *i).chain([ObjectId([0xff; 32])]).collect();
+    let got = store.get_many(p, &want).unwrap();
+    assert_eq!(got.len(), 10);
+    assert_eq!(got[0], items[999]);
+    assert_eq!(store.missing(p, &want).unwrap(), vec![ObjectId([0xff; 32])]);
+    assert_eq!(store.put_batch(p, &[(ObjectId([7; 32]), b"a".to_vec()), (ObjectId([7; 32]), b"a".to_vec())]).unwrap(), 1, "duplicates inside a batch");
+}
+
+trait WithSuffix {
+    fn with_suffix(self, i: u32) -> ObjectId;
+}
+impl WithSuffix for ObjectId {
+    fn with_suffix(mut self, i: u32) -> ObjectId {
+        self.0[28..].copy_from_slice(&i.to_le_bytes());
+        self
+    }
 }

@@ -12,7 +12,7 @@ use crate::error::{ApiError, ApiResult};
 pub async fn missing(State(s): State<Shared>, auth: AuthDevice, Path(p): Path<Uuid>, Json(req): Json<MissingRequest>) -> ApiResult<Json<MissingResponse>> {
     auth.check_project(&s, p)?;
     let s2 = s.clone();
-    let ids = tokio::task::spawn_blocking(move || req.ids.into_iter().filter(|id| !s2.blobs.exists(p, id)).collect()).await?;
+    let ids = tokio::task::spawn_blocking(move || s2.blobs.missing(p, &req.ids)).await??;
     Ok(Json(MissingResponse { ids }))
 }
 
@@ -23,22 +23,13 @@ pub async fn upload(State(s): State<Shared>, auth: AuthDevice, Path(p): Path<Uui
         return Err(ApiError::TooLarge);
     }
     let s2 = s.clone();
-    tokio::task::spawn_blocking(move || items.iter().try_for_each(|(id, b)| s2.blobs.put(p, id, b))).await??;
+    tokio::task::spawn_blocking(move || s2.blobs.put_batch(p, &items)).await??;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn fetch(State(s): State<Shared>, auth: AuthDevice, Path(p): Path<Uuid>, Json(req): Json<MissingRequest>) -> ApiResult<Vec<u8>> {
     auth.check_project(&s, p)?;
     let s2 = s.clone();
-    let found = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<_>> {
-        let mut out = Vec::new();
-        for id in req.ids {
-            if let Some(b) = s2.blobs.get(p, &id)? {
-                out.push((id, b));
-            }
-        }
-        Ok(out)
-    })
-    .await??;
+    let found = tokio::task::spawn_blocking(move || s2.blobs.get_many(p, &req.ids)).await??;
     Ok(encode_batch(&found))
 }

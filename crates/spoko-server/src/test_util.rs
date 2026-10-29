@@ -75,7 +75,7 @@ pub fn spawn_on(addr: Option<SocketAddr>) -> TestServer {
 fn spawn_in(dir: tempfile::TempDir, addr: Option<SocketAddr>) -> TestServer {
     let state: Shared = Arc::new(AppState {
         db: crate::db::Db::open(&dir.path().join("spoko.db")).unwrap(),
-        blobs: crate::blobstore::BlobStore::new(dir.path().join("blobs")),
+        blobs: crate::blobstore::BlobStore::open(&dir.path().join("blobs")).unwrap(),
         hub: crate::hub::Hub::default(),
     });
     let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());

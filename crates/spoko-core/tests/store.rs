@@ -112,3 +112,119 @@ fn reopen_existing_store() {
     std::fs::write(d.path().join("file"), b"").unwrap();
     assert!(Store::open_or_init(&d.path().join("file")).is_err());
 }
+
+#[test]
+fn batch_writes_one_pack_and_objects_stay_readable() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_or_init(&d.path().join("s.git")).unwrap();
+    let loose_before = count_loose(&d.path().join("s.git/objects"));
+    let ids = store
+        .batch(|| -> Result<Vec<git2::Oid>, git2::Error> {
+            let mut ids = vec![];
+            for i in 0..500 {
+                let oid = store.write_blob(format!("blob {i}").as_bytes())?;
+                assert!(store.has(oid), "pending objects are visible inside the batch");
+                assert_eq!(store.read_blob(oid)?, format!("blob {i}").into_bytes());
+                ids.push(oid);
+            }
+            ids.push(store.write_blob(b"blob 0")?); // duplicate
+            ids.push(store.write_blob_stream(&mut &b"streamed"[..], 8)?);
+            let big = vec![7u8; (1 << 20) + 1];
+            let b = store.write_blob(&big)?;
+            assert!(store.repo().odb()?.reader(b).is_ok(), "big blobs are loose and streamable");
+            Ok(ids)
+        })
+        .unwrap();
+    assert_eq!(count_loose(&d.path().join("s.git/objects")), loose_before + 1, "only the big blob is loose");
+    let packs = std::fs::read_dir(d.path().join("s.git/objects/pack")).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "pack")).count();
+    assert_eq!(packs, 1);
+    for (i, oid) in ids.iter().take(500).enumerate() {
+        assert_eq!(store.read_blob(*oid).unwrap(), format!("blob {i}").into_bytes());
+        let mut out = vec![];
+        store.copy_blob_to(*oid, &mut out).unwrap();
+        assert_eq!(out, format!("blob {i}").into_bytes(), "packed blobs can be copied out");
+        assert_eq!(store.blob_size(*oid).unwrap(), out.len() as u64);
+    }
+    assert_eq!(store.read_blob(ids[501]).unwrap(), b"streamed");
+    // a fresh handle sees the pack too
+    let again = Store::open_or_init(&d.path().join("s.git")).unwrap();
+    assert!(again.has(ids[42]));
+    // a tree over packed blobs builds and reads back
+    let mut w = WorkMap::default();
+    w.insert(RelPath::new("a.txt"), Entry { oid: ids[3], mode: EntryMode::Blob });
+    let t = store.build_tree(&w).unwrap();
+    assert_eq!(store.read_tree(t).unwrap(), w);
+}
+
+#[test]
+fn small_batches_stay_loose_and_errors_still_flush() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_or_init(&d.path().join("s.git")).unwrap();
+    let r: Result<(), git2::Error> = store.batch(|| {
+        store.write_blob(b"kept")?;
+        Err(git2::Error::from_str("boom"))
+    });
+    assert!(r.is_err());
+    let oid = git2::Oid::hash_object(git2::ObjectType::Blob, b"kept").unwrap();
+    assert!(store.has(oid), "written objects survive a failed batch (stat cache may point at them)");
+    assert!(!d.path().join("s.git/objects/pack").read_dir().unwrap().any(|e| e.unwrap().path().extension().is_some_and(|x| x == "pack")), "tiny batch → loose");
+    // nested batches flush once, at the outer end
+    store.batch(|| store.batch(|| store.write_raw(git2::ObjectType::Blob, b"nested").map(|_| ()))).unwrap();
+    assert!(store.has(git2::Oid::hash_object(git2::ObjectType::Blob, b"nested").unwrap()));
+}
+
+fn count_loose(objects: &std::path::Path) -> usize {
+    std::fs::read_dir(objects).unwrap().filter_map(Result::ok).filter(|e| e.file_name().len() == 2).map(|e| std::fs::read_dir(e.path()).unwrap().count()).sum()
+}
+
+#[test]
+fn build_tree_matches_git_treebuilder_and_packs() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_or_init(&d.path().join("s.git")).unwrap();
+    let blob = store.write_blob(b"x").unwrap();
+    let link = store.write_blob(b"target").unwrap();
+    let mut w = WorkMap::default();
+    // git sorts "a-b" < "a/" < "a0" (directories compare as "name/")
+    for (p, mode) in [("a-b", EntryMode::Blob), ("a/x", EntryMode::Blob), ("a0", EntryMode::BlobExec), ("ln", EntryMode::Link), ("sub", EntryMode::Commit), ("z/y/q", EntryMode::Blob)] {
+        let oid = match mode {
+            EntryMode::Link => link,
+            EntryMode::Commit => git2::Oid::from_str("0123456789abcdef0123456789abcdef01234567").unwrap(),
+            _ => blob,
+        };
+        w.insert(RelPath::new(p), Entry { oid, mode });
+    }
+    // reference: libgit2's treebuilder
+    let repo = store.repo();
+    let tb_leaf = |entries: &[(&str, git2::Oid, i32)]| {
+        let mut tb = repo.treebuilder(None).unwrap();
+        for (n, o, m) in entries {
+            tb.insert(n, *o, *m).unwrap();
+        }
+        tb.write().unwrap()
+    };
+    let a = tb_leaf(&[("x", blob, 0o100644)]);
+    let y = tb_leaf(&[("q", blob, 0o100644)]);
+    let z = tb_leaf(&[("y", y, 0o040000)]);
+    git2::opts::strict_object_creation(false);
+    let reference = tb_leaf(&[("a-b", blob, 0o100644), ("a", a, 0o040000), ("a0", blob, 0o100755), ("ln", link, 0o120000), ("sub", w[&RelPath::new("sub")].oid, 0o160000), ("z", z, 0o040000)]);
+    git2::opts::strict_object_creation(true);
+    assert_eq!(store.build_tree(&w).unwrap(), reference);
+    assert_eq!(store.read_tree(reference).unwrap(), w);
+    assert_eq!(store.build_tree(&WorkMap::default()).unwrap().to_string(), "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "empty tree");
+}
+
+#[test]
+fn big_tree_is_packed_not_loose() {
+    let d = tempfile::tempdir().unwrap();
+    let store = Store::open_or_init(&d.path().join("s.git")).unwrap();
+    let mut w = WorkMap::default();
+    for i in 0..200 {
+        let blob = store.write_blob(format!("x{i}").as_bytes()).unwrap();
+        w.insert(RelPath::new(&format!("d{i}/f")), Entry { oid: blob, mode: EntryMode::Blob });
+    }
+    let before = count_loose(&d.path().join("s.git/objects"));
+    let t = store.build_tree(&w).unwrap();
+    assert_eq!(count_loose(&d.path().join("s.git/objects")), before, "201 trees → one pack");
+    assert_eq!(store.read_tree(t).unwrap(), w);
+    assert_eq!(store.build_tree(&w).unwrap(), t, "rebuild is stable");
+}

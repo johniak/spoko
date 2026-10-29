@@ -288,24 +288,27 @@ impl Engine {
         if dirty.is_none() {
             self.reload_config()?;
         }
-        let scan = match dirty {
-            Some(d) => incremental_scan(
-                &self.root,
-                &self.matcher,
-                &self.store,
-                &mut self.statcache,
-                &self.work,
-                d,
-            )?,
-            None => full_scan_with(
-                &self.root,
-                &self.matcher,
-                &self.store,
-                &mut self.statcache,
-                &self.work,
-                None,
-            )?,
-        };
+        // new file contents go into one packfile instead of a loose object each
+        let scan = self.store.batch(|| -> Result<_> {
+            Ok(match dirty {
+                Some(d) => incremental_scan(
+                    &self.root,
+                    &self.matcher,
+                    &self.store,
+                    &mut self.statcache,
+                    &self.work,
+                    d,
+                )?,
+                None => full_scan_with(
+                    &self.root,
+                    &self.matcher,
+                    &self.store,
+                    &mut self.statcache,
+                    &self.work,
+                    None,
+                )?,
+            })
+        })?;
         let mut work = scan.work;
         for (p, e) in &self.state.unmaterialized {
             if !work.contains_key(p) && !work.keys().any(|k| k.is_within(p)) {

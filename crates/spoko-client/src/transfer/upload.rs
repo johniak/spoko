@@ -7,7 +7,7 @@ use spoko_crypto::{Keyring, ObjectId, git_object_id};
 use super::chunks::{CHUNK_THRESHOLD, Manifest, parallel_put, push_stream};
 use super::codec::{KIND_MANIFEST, kind_of};
 use super::known::KnownSet;
-use super::{FLUSH_BYTES, ObjectServer};
+use super::{FLUSH_BYTES, FLUSH_OBJECTS, ObjectServer};
 use crate::Result;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +55,7 @@ pub fn push_objects(
         bytes += item.2.len();
         items.push(item);
         stats.objects += 1;
-        if bytes >= FLUSH_BYTES {
+        if bytes >= FLUSH_BYTES || items.len() >= FLUSH_OBJECTS {
             stats.bytes += parallel_put(server, kr, std::mem::take(&mut items))?;
             bytes = 0;
         }

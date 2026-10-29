@@ -26,3 +26,5 @@ pub trait ObjectServer: Send + Sync {
 pub const WORKERS: usize = 4;
 /// Plaintext bytes gathered before a parallel flush.
 pub const FLUSH_BYTES: usize = 8 << 20;
+/// Also flush after this many objects, so many tiny files still go up in parallel batches.
+pub const FLUSH_OBJECTS: usize = 4096;

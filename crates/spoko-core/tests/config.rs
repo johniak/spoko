@@ -143,3 +143,20 @@ fn spoko_home_resolves_and_save_reports_errors() {
     assert!(LocalConfig::load(dir.path()).is_err());
     assert!(LocalConfig::default().save(dir.path()).is_err());
 }
+
+#[test]
+fn documented_example_parses() {
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/configuration.md")).unwrap();
+    let toml = doc.split("```toml\n").nth(1).unwrap().split("```").next().unwrap();
+    let d = tempfile::tempdir().unwrap();
+    std::fs::write(d.path().join(".spokoconfig"), toml).unwrap();
+    let cfg = spoko_core::config::ProjectConfig::load(d.path()).unwrap();
+    assert_eq!(cfg.watch[0].run.as_deref(), Some("npm ci"));
+    assert_eq!(cfg.docker.volume[0].name, "pgdata");
+    assert_eq!(cfg.binary.size_threshold.0, 10_000_000);
+    assert_eq!(cfg.external.custom[0].name, "notes");
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../README.md")).unwrap();
+    let toml = readme.split("```toml\n").nth(1).unwrap().split("```").next().unwrap();
+    std::fs::write(d.path().join(".spokoconfig"), toml).unwrap();
+    assert_eq!(spoko_core::config::ProjectConfig::load(d.path()).unwrap().ignore.include, vec![".env", ".env.*"]);
+}

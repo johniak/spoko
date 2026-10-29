@@ -136,3 +136,14 @@ fn case_probe_matches_fs() {
     assert_eq!(insensitive, dir.path().join("upper").exists());
     assert!(fs_is_case_insensitive(&dir.path().join("missing")).is_err());
 }
+
+#[test]
+fn barrier_write_replaces_content() {
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("state.json");
+    spoko_core::platform::atomic_write_barrier(&p, b"one").unwrap();
+    spoko_core::platform::atomic_write_barrier(&p, b"two").unwrap();
+    assert_eq!(std::fs::read(&p).unwrap(), b"two");
+    assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 1, "no temp files left");
+    assert!(spoko_core::platform::atomic_write_barrier(&d.path().join("missing-dir-file/x").join("y"), b"z").is_ok(), "creates parents");
+}
