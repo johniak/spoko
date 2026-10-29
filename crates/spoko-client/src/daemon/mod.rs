@@ -61,7 +61,8 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     let _guard = lock.try_write().map_err(|_| ClientError::Other("spoko daemon is already running for this SPOKO_HOME".into()))?;
     let identity = Identity::load(home)?;
     let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
-    let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), opts.notifier.clone());
+    let prompts = Arc::new(PromptTracker { inner: opts.notifier.clone(), prompts: Mutex::new(BTreeMap::new()) });
+    let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), prompts.clone());
 
     let mut projects: BTreeMap<Uuid, ProjectHandle> = BTreeMap::new();
     let mut roots: BTreeMap<PathBuf, Uuid> = BTreeMap::new();
@@ -82,6 +83,7 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
             pending_hooks: vec![],
             conflicts: 0,
             warnings: vec![],
+            volume_prompts: vec![],
         }));
         let (tx, rx) = unbounded();
         let worker = Worker::new(engine, opts.ext.clone(), status.clone(), opts.rescan_every);
@@ -114,7 +116,7 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     };
 
     let listener = ipc::listen(home)?;
-    ipc::serve(&listener, &mut |req| dispatch(&identity, &projects, req));
+    ipc::serve(&listener, &mut |req| dispatch(&identity, &projects, &prompts, req));
 
     stop.store(true, Ordering::SeqCst);
     drop(watcher);
@@ -132,10 +134,41 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     Ok(())
 }
 
-fn dispatch(identity: &Identity, projects: &BTreeMap<Uuid, ProjectHandle>, req: Request) -> Response {
+/// Passes notifications on and remembers volume prompts for the status report (tray menu).
+struct PromptTracker {
+    inner: Arc<dyn Notifier>,
+    prompts: Mutex<BTreeMap<Uuid, Vec<ipc::VolumePrompt>>>,
+}
+
+impl Notifier for PromptTracker {
+    fn notify(&self, n: crate::notifier::Notification) {
+        if let crate::notifier::Notification::VolumePrompt { project, volume, from_device, at } = &n {
+            let mut map = self.prompts.lock().expect("prompts");
+            let list = map.entry(*project).or_default();
+            list.retain(|p| &p.volume != volume);
+            list.push(ipc::VolumePrompt { volume: volume.clone(), from_device: from_device.clone(), at: *at });
+        }
+        self.inner.notify(n);
+    }
+}
+
+fn dispatch(identity: &Identity, projects: &BTreeMap<Uuid, ProjectHandle>, prompts: &PromptTracker, req: Request) -> Response {
     if req == Request::Status {
-        let report = StatusReport { device_name: identity.device_name.clone(), projects: projects.values().map(|p| p.status.lock().expect("status").clone()).collect() };
-        return Response::Status { report };
+        let map = prompts.prompts.lock().expect("prompts");
+        let projects = projects
+            .iter()
+            .map(|(id, p)| {
+                let mut st = p.status.lock().expect("status").clone();
+                st.volume_prompts = map.get(id).cloned().unwrap_or_default();
+                st
+            })
+            .collect();
+        return Response::Status { report: StatusReport { device_name: identity.device_name.clone(), projects } };
+    }
+    if let Request::VolumePull { project, volume, .. } = &req
+        && let Some(list) = prompts.prompts.lock().expect("prompts").get_mut(project)
+    {
+        list.retain(|p| volume.as_ref().is_some_and(|v| v != &p.volume));
     }
     let Some(p) = req.project().and_then(|id| projects.get(&id)) else { return Response::Error { message: "unknown project".into() } };
     let (tx, rx) = bounded(1);

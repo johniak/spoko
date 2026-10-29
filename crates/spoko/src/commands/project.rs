@@ -94,7 +94,7 @@ fn offline_status(ctx: &Ctx, id: Uuid, root: &std::path::Path) -> Res<ProjectSta
     };
     let pending_hooks = e.state.pending_hooks.iter().filter_map(|h| e.config().watch.get(*h)).filter_map(|w| hooks::command_for(w, hooks::Os::current())).map(str::to_owned).collect();
     let name = root.file_name().map_or_else(|| id.to_string(), |n| n.to_string_lossy().into_owned());
-    Ok(ProjectStatus { id, name, root: root.to_path_buf(), state, last_sync: None, pending_hooks, conflicts, warnings: vec![] })
+    Ok(ProjectStatus { id, name, root: root.to_path_buf(), state, last_sync: None, pending_hooks, conflicts, warnings: vec![], volume_prompts: vec![] })
 }
 
 fn state_pl(s: &SyncState) -> String {

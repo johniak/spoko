@@ -1,0 +1,80 @@
+use std::path::PathBuf;
+
+use spoko_client::daemon::ipc::{ProjectStatus, Request, StatusReport, SyncState, VolumePrompt};
+use spoko_tray::menu::{Action, IconState, build, build_unreachable};
+use uuid::Uuid;
+
+fn project(name: &str, state: SyncState) -> ProjectStatus {
+    ProjectStatus {
+        id: Uuid::new_v4(),
+        name: name.into(),
+        root: PathBuf::from(format!("/code/{name}")),
+        state,
+        last_sync: Some(1),
+        pending_hooks: vec![],
+        conflicts: 0,
+        warnings: vec![],
+        volume_prompts: vec![],
+    }
+}
+
+fn report(ps: Vec<ProjectStatus>) -> StatusReport {
+    StatusReport { device_name: "mac".into(), projects: ps }
+}
+
+#[test]
+fn icon_is_worst_state() {
+    assert_eq!(build(&report(vec![])).icon, IconState::Ok);
+    assert_eq!(build(&report(vec![project("a", SyncState::Synced), project("b", SyncState::Syncing)])).icon, IconState::Syncing);
+    assert_eq!(build(&report(vec![project("a", SyncState::Paused("x".into())), project("b", SyncState::Syncing)])).icon, IconState::Paused);
+    assert_eq!(build(&report(vec![project("a", SyncState::Offline), project("b", SyncState::Paused("x".into()))])).icon, IconState::Offline);
+    let mut c = project("c", SyncState::Conflict(2));
+    c.conflicts = 2;
+    let m = build(&report(vec![project("a", SyncState::Offline), c.clone()]));
+    assert_eq!(m.icon, IconState::Conflict);
+    let item = m.items.iter().find(|i| i.label == "Rozwiąż konflikty (2)").unwrap();
+    assert_eq!(item.action, Some(Action::Terminal { cwd: c.root.clone(), command: "spoko resolve".into() }));
+    assert!(m.tooltip.contains("konflikt"));
+    assert_eq!(m.items.last().unwrap().action, Some(Action::Quit));
+}
+
+#[test]
+fn pending_hook_item_runs_hooks() {
+    let mut p = project("app", SyncState::Synced);
+    p.pending_hooks = vec!["npm ci".into()];
+    let m = build(&report(vec![p.clone()]));
+    let item = m.items.iter().find(|i| i.label == "Uruchom: npm ci").unwrap();
+    assert_eq!(item.action, Some(Action::Ipc(Request::HooksRun { project: p.id })));
+    assert!(m.items.iter().any(|i| i.label == "Synchronizuj teraz" && i.action == Some(Action::Ipc(Request::Sync { project: p.id }))));
+    assert!(m.items.iter().any(|i| i.label == "Pauza" && i.action == Some(Action::Ipc(Request::Pause { project: p.id }))));
+    assert!(m.items.iter().any(|i| i.label.starts_with("app") && !i.enabled));
+}
+
+#[test]
+fn volume_prompt_item() {
+    let mut p = project("app", SyncState::Synced);
+    p.volume_prompts = vec![VolumePrompt { volume: "pg_data".into(), from_device: "linux".into(), at: 0 }];
+    let m = build(&report(vec![p.clone()]));
+    let item = m.items.iter().find(|i| i.label == "Pobierz pg_data z linux").unwrap();
+    assert_eq!(item.action, Some(Action::Ipc(Request::VolumePull { project: p.id, volume: Some("pg_data".into()), force: false, fresh: true })));
+}
+
+#[test]
+fn paused_items() {
+    let p = project("app", SyncState::Paused("paused".into()));
+    let m = build(&report(vec![p.clone()]));
+    assert!(m.items.iter().any(|i| i.label == "Wznów" && i.action == Some(Action::Ipc(Request::Resume { project: p.id, confirm: false }))));
+    let md = project("big", SyncState::Paused("mass delete 60/100".into()));
+    let m = build(&report(vec![md.clone()]));
+    let item = m.items.iter().find(|i| i.label.starts_with("Wznów")).unwrap();
+    assert_eq!(item.action, Some(Action::Terminal { cwd: md.root.clone(), command: "spoko status".into() }), "mass delete is confirmed in a terminal");
+}
+
+#[test]
+fn offline_when_daemon_unreachable() {
+    let m = build_unreachable();
+    assert_eq!(m.icon, IconState::Offline);
+    assert!(m.items.iter().any(|i| i.label.contains("nie działa") && !i.enabled));
+    assert!(m.items.iter().any(|i| i.action == Some(Action::StartDaemon)));
+    assert_eq!(m.items.last().unwrap().action, Some(Action::Quit));
+}

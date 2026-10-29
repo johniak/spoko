@@ -63,6 +63,14 @@ pub enum SyncState {
     Paused(String),
 }
 
+/// "Pull `volume` from `from_device`?" after a device switch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VolumePrompt {
+    pub volume: String,
+    pub from_device: String,
+    pub at: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectStatus {
     pub id: Uuid,
@@ -73,6 +81,8 @@ pub struct ProjectStatus {
     pub pending_hooks: Vec<String>,
     pub conflicts: usize,
     pub warnings: Vec<String>,
+    #[serde(default)]
+    pub volume_prompts: Vec<VolumePrompt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -98,6 +108,11 @@ pub enum Response {
     Text { text: String },
     Hooks { runs: Vec<HookRun> },
     Log { entries: Vec<LogLine> },
+}
+
+/// `$SPOKO_HOME` (default `~/.spoko`).
+pub fn default_home() -> PathBuf {
+    spoko_core::config::spoko_home()
 }
 
 fn fnv(s: &str) -> u64 {

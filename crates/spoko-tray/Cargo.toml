@@ -7,3 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+spoko-client = { version = "0.1.0", path = "../spoko-client" }
+tao = "0.37.2"
+tray-icon = "0.26.1"
+uuid = "1.29.0"
