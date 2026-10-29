@@ -96,5 +96,7 @@ fn serve_binary_exits_1_when_the_port_is_taken() {
     let o = std::process::Command::new(env!("CARGO_BIN_EXE_spoko-server")).args(["serve", "--data", dir.path().to_str().unwrap(), "--listen", &addr]).output().unwrap();
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.to_lowercase().contains("address") && err.to_lowercase().contains("in use"), "{err}");
+    // Unix: "Address already in use"; Windows: "Only one usage of each socket address …"
+    let e = err.to_lowercase();
+    assert!(e.contains("address") && (e.contains("in use") || e.contains("only one usage")), "{err}");
 }
