@@ -383,6 +383,42 @@ fn local_edit_during_merge_apply_is_merged_again() {
     assert_eq!(a.text("f.txt"), "L1\nl2\nl3\nl4\nB5\n");
 }
 
+/// The user saves `path` with `content` once, while spoko writes the first file of an apply.
+struct SaveOnce(PathBuf, &'static str, std::sync::atomic::AtomicBool);
+impl ApplyFaults for SaveOnce {
+    fn before_write(&self, _index: usize, _rel: &RelPath) -> std::io::Result<()> {
+        if !self.2.swap(true, Ordering::SeqCst) {
+            std::fs::write(&self.0, self.1)?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn file_saved_while_the_apply_writes_others_is_merged_not_overwritten() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        a.write(f, "l1\nl2\nl3\n");
+    }
+    let mut ea = a.create();
+    let (mut eb, _) = b.join(ea.project_id);
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        a.write(f, "l1\nl2\nl3\nfrom a\n");
+    }
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    // B had no local change when the fast-forward started; the editor saves b.txt mid-way
+    eb.faults = Some(Box::new(SaveOnce(b.root.join("b.txt"), "from b\nl1\nl2\nl3\n", false.into())));
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Merged { conflicts: 0 });
+    for f in ["a.txt", "c.txt"] {
+        assert_eq!(b.text(f), "l1\nl2\nl3\nfrom a\n");
+    }
+    assert_eq!(b.text("b.txt"), "from b\nl1\nl2\nl3\nfrom a\n");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::FastForwarded);
+    assert_eq!(a.text("b.txt"), "from b\nl1\nl2\nl3\nfrom a\n");
+}
+
 #[test]
 fn project_removed_during_apply_pauses() {
     let mut w = World::new();

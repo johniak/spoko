@@ -167,6 +167,95 @@ fn injected_fault_stops_mid_apply_without_tmp_leftovers() {
     assert_eq!(names, vec!["a"]);
 }
 
+/// The user saves `path` while spoko is about to write the `at`-th inline file.
+struct SaveDuring {
+    at: usize,
+    path: std::path::PathBuf,
+}
+impl ApplyFaults for SaveDuring {
+    fn before_write(&self, index: usize, _rel: &RelPath) -> io::Result<()> {
+        if index == self.at {
+            fs::write(&self.path, b"saved by the user meanwhile")?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn file_saved_during_the_apply_is_left_alone() {
+    let mut e = Env::new();
+    let v1 = e.map(&[("a", b"1"), ("b", b"1"), ("c", b"1")]);
+    e.apply(&WorkMap::default(), &v1, &ApplyOpts::default()).unwrap();
+    let v2 = e.map(&[("a", b"2"), ("b", b"2"), ("c", b"2")]);
+    // saved after the up-front check, before spoko got to it
+    let faults = SaveDuring { at: 0, path: e.root().join("b") };
+    let err = e.apply(&v1, &v2, &ApplyOpts { faults: Some(&faults), ..Default::default() }).unwrap_err();
+    assert!(matches!(&err, ApplyError::LocalChanged(p) if *p == vec![RelPath::new("b")]), "{err}");
+    assert_eq!((e.read("a"), e.read("b"), e.read("c")), (b"2".to_vec(), b"saved by the user meanwhile".to_vec(), b"2".to_vec()));
+    // saved while spoko was writing it: the rename does not go over it
+    let v3 = e.map(&[("a", b"3"), ("c", b"3")]);
+    let faults = SaveDuring { at: 0, path: e.root().join("a") };
+    let err = e.apply(&e.map(&[("a", b"2"), ("c", b"2")]), &v3, &ApplyOpts { faults: Some(&faults), ..Default::default() }).unwrap_err();
+    assert!(matches!(&err, ApplyError::LocalChanged(p) if *p == vec![RelPath::new("a")]), "{err}");
+    assert_eq!((e.read("a"), e.read("c")), (b"saved by the user meanwhile".to_vec(), b"3".to_vec()));
+    let leftovers: Vec<_> = fs::read_dir(e.root()).unwrap().map(|d| d.unwrap().file_name()).filter(|n| n.to_string_lossy().starts_with(".spoko-tmp-")).collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+/// The user saves `path` while spoko deletes `during`.
+struct SaveDuringDelete {
+    during: &'static str,
+    path: std::path::PathBuf,
+}
+impl ApplyFaults for SaveDuringDelete {
+    fn before_write(&self, _index: usize, _rel: &RelPath) -> io::Result<()> {
+        Ok(())
+    }
+    fn before_delete(&self, rel: &RelPath) -> io::Result<()> {
+        if rel.as_str() == self.during {
+            fs::write(&self.path, b"saved by the user meanwhile")?;
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn file_saved_before_its_deletion_is_kept() {
+    let mut e = Env::new();
+    let v1 = e.map(&[("a", b"1"), ("b", b"1"), ("c", b"1"), ("d", b"1")]);
+    e.apply(&WorkMap::default(), &v1, &ApplyOpts::default()).unwrap();
+    let v2 = e.map(&[("d", b"2")]);
+    let faults = SaveDuringDelete { during: "a", path: e.root().join("b") };
+    let err = e.apply(&v1, &v2, &ApplyOpts { faults: Some(&faults), ..Default::default() }).unwrap_err();
+    assert!(matches!(&err, ApplyError::LocalChanged(p) if *p == vec![RelPath::new("b")]), "{err}");
+    assert_eq!(e.read("b"), b"saved by the user meanwhile");
+    assert!(!e.root().join("a").exists() && !e.root().join("c").exists());
+    assert_eq!(e.read("d"), b"2");
+}
+
+/// The user deletes `path` while spoko deletes another file.
+struct DeleteDuringDelete(std::path::PathBuf);
+impl ApplyFaults for DeleteDuringDelete {
+    fn before_write(&self, _index: usize, _rel: &RelPath) -> io::Result<()> {
+        Ok(())
+    }
+    fn before_delete(&self, _rel: &RelPath) -> io::Result<()> {
+        let _ = fs::remove_file(&self.0);
+        Ok(())
+    }
+}
+
+#[test]
+fn file_deleted_by_the_user_during_its_deletion_is_fine() {
+    let mut e = Env::new();
+    let v1 = e.map(&[("a", b"1"), ("b", b"1")]);
+    e.apply(&WorkMap::default(), &v1, &ApplyOpts::default()).unwrap();
+    let faults = DeleteDuringDelete(e.root().join("b"));
+    let r = e.apply(&v1, &WorkMap::default(), &ApplyOpts { faults: Some(&faults), ..Default::default() }).unwrap();
+    assert_eq!(r.deleted, vec![RelPath::new("a"), RelPath::new("b")]);
+    assert!(fs::read_dir(e.root()).unwrap().next().is_none());
+}
+
 #[test]
 fn gitlinks_are_not_checked_out() {
     let mut e = Env::new();

@@ -124,21 +124,31 @@ pub fn atomic_write_with(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn 
 
 /// [`atomic_write_with`] for a path whose parent directory already exists.
 pub fn atomic_write_in_dir(path: &Path, exec: bool, fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>) -> io::Result<DiskEntry> {
+    Ok(atomic_replace_in_dir(path, exec, fill, &|| Ok(true))?.expect("renamed"))
+}
+
+/// [`atomic_write_in_dir`] that renames over `path` only if `unchanged()` still holds right
+/// before it (the target is as the caller last saw it); `None`, and no temp file, otherwise.
+pub fn atomic_replace_in_dir(
+    path: &Path,
+    exec: bool,
+    fill: &mut dyn FnMut(&mut dyn Write) -> io::Result<()>,
+    unchanged: &dyn Fn() -> io::Result<bool>,
+) -> io::Result<Option<DiskEntry>> {
     let tmp = tmp_path(path);
-    let result = (|| {
+    let result = (|| -> io::Result<bool> {
         let mut f = io::BufWriter::new(fs::File::create(&tmp)?);
         fill(&mut f)?;
         let f = f.into_inner().map_err(io::IntoInnerError::into_error)?;
         set_exec(&f, exec)?;
         durable(&f)?;
         drop(f);
-        with_retry(|| fs::rename(&tmp, path))
+        Ok(unchanged()? && with_retry(|| fs::rename(&tmp, path)).map(|()| true)?)
     })();
-    if result.is_err() {
+    if !matches!(result, Ok(true)) {
         let _ = fs::remove_file(&tmp);
     }
-    result?;
-    Ok(read_entry(path)?.expect("just written"))
+    Ok(if result? { Some(read_entry(path)?.expect("just written")) } else { None })
 }
 
 /// A fresh temp file is never executable (0666 & ~umask), so only `exec` needs a chmod.
