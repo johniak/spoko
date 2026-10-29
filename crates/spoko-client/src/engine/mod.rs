@@ -121,6 +121,22 @@ pub struct Engine {
     case_insensitive: bool,
     /// Watch hooks touched by the apply in progress.
     fresh_hooks: Vec<usize>,
+    /// When `statcache.bin` was last written; big caches are written at most every
+    /// [`STATCACHE_SAVE_EVERY`] and when the engine is dropped.
+    statcache_saved: Option<std::time::Instant>,
+}
+
+/// Stat caches with fewer entries are written on every save.
+const STATCACHE_ALWAYS_SAVE: usize = 10_000;
+const STATCACHE_SAVE_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+impl Drop for Engine {
+    fn drop(&mut self) {
+        // best effort: a stale cache only costs re-hashing the files changed since
+        if self.statcache_saved.is_some() {
+            let _ = self.statcache.save(&self.dir.join("statcache.bin"));
+        }
+    }
 }
 
 impl Engine {
@@ -158,6 +174,7 @@ impl Engine {
             known,
             case_insensitive,
             fresh_hooks: Vec::new(),
+            statcache_saved: None,
         };
         for x in &e.externals {
             e.ext_caches.insert(
@@ -213,7 +230,15 @@ impl Engine {
 
     pub fn save(&mut self) -> Result<()> {
         self.state.save(&self.dir.join("state.json"))?;
-        self.statcache.save(&self.dir.join("statcache.bin"))?;
+        let due = self.statcache.entries.len() < STATCACHE_ALWAYS_SAVE
+            || self.statcache_saved.is_none_or(|t| t.elapsed() >= STATCACHE_SAVE_EVERY);
+        if due {
+            self.statcache.save(&self.dir.join("statcache.bin"))?;
+            self.statcache_saved = Some(std::time::Instant::now());
+        } else {
+            // entries recorded until now count as written now (racy-git window), as a save would
+            self.statcache.mark_written();
+        }
         for (name, c) in &mut self.ext_caches {
             c.save(&self.dir.join(format!("ext-{name}.cache")))?;
         }

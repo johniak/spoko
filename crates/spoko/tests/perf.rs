@@ -40,7 +40,7 @@ impl Machine {
         let tmp = self.p("");
         let c = self.cmd(&["daemon", "run"], &tmp).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
         let end = Instant::now() + Duration::from_secs(60);
-        while !self.cmd(&["status"], &tmp).output().unwrap().stdout.windows(14).any(|w| w == "daemon: działa".as_bytes()) {
+        while !String::from_utf8_lossy(&self.cmd(&["status"], &tmp).output().unwrap().stdout).contains("daemon: działa") {
             assert!(Instant::now() < end, "daemon did not start");
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -63,23 +63,57 @@ fn pct(v: &mut [Duration], p: f64) -> Duration {
     v[((v.len() as f64 - 1.0) * p).round() as usize]
 }
 
-#[test]
-#[ignore = "perf: release only"]
-fn scale_100k() {
-    let srv = spawn_test_server();
+fn two_machines(srv: &spoko_server::test_util::TestServer) -> (Machine, Machine) {
     let (a, b) = (Machine::new("mac"), Machine::new("linux"));
     let tmp = a.p("");
     let out = a.ok(&["login", &srv.url, "--token", &srv.bootstrap_token("jan")], &tmp);
     let rk = out.lines().find_map(|l| l.strip_prefix("Klucz odzyskiwania: ")).unwrap().trim().to_owned();
     b.ok(&["login", &srv.url, "--token", &srv.bootstrap_token("jan"), "--recovery-key", &rk], &tmp);
-    let pa = a.p("big");
-    for i in 0..FILES {
-        let p = pa.join(format!("d{:03}/s{:02}/f{i}.txt", i % 500, i % 37));
-        if i < 500 * 37 {
-            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        }
+    (a, b)
+}
+
+fn make_files(root: &Path, n: usize) {
+    for i in 0..n {
+        let p = root.join(format!("d{:03}/s{:02}/f{i}.txt", i % 500, i % 37));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, format!("file {i}\n")).unwrap();
     }
+}
+
+/// Spec: idle daemon < 50 MB RAM and ~0% CPU "for a typical project".
+#[test]
+#[ignore = "perf: release only"]
+fn typical_project_idle_daemon() {
+    const TYPICAL: usize = 5_000;
+    let srv = spawn_test_server();
+    let (a, _b) = two_machines(&srv);
+    let pa = a.p("app");
+    make_files(&pa, TYPICAL);
+    a.ok(&["init"], &pa);
+    let mut d = a.daemon();
+    std::fs::write(pa.join("d000/s00/f0.txt"), "edit").unwrap();
+    std::thread::sleep(Duration::from_secs(5));
+    let rss_kb: u64 = ps(d.id(), "rss").parse().unwrap();
+    let cpu0 = cpu_secs(&ps(d.id(), "time"));
+    std::thread::sleep(Duration::from_secs(30));
+    let idle_cpu = (cpu_secs(&ps(d.id(), "time")) - cpu0) / 30.0 * 100.0;
+    let _ = d.kill();
+    let _ = d.wait();
+    let report = format!("typical project ({TYPICAL} files): idle daemon RSS {} MiB, CPU over 30 s {idle_cpu:.2}%\n", rss_kb / 1024);
+    eprintln!("{report}");
+    std::fs::write(std::env::temp_dir().join("spoko-perf-typical.txt"), &report).unwrap();
+    assert!(rss_kb < 50 * 1024, "RSS {rss_kb} KiB");
+    assert!(idle_cpu < 1.0, "idle CPU {idle_cpu}%");
+}
+
+#[test]
+#[ignore = "perf: release only"]
+fn scale_100k() {
+    let srv = spawn_test_server();
+    let (a, b) = two_machines(&srv);
+    let tmp = a.p("");
+    let pa = a.p("big");
+    make_files(&pa, FILES);
     let t = Instant::now();
     let id = a.ok(&["init"], &pa).lines().find_map(|l| l.strip_prefix("Projekt: ").map(str::to_owned)).unwrap();
     let init = t.elapsed();
@@ -120,16 +154,16 @@ fn scale_100k() {
     let idle_cpu = (cpu1 - cpu0) / 60.0 * 100.0;
 
     let report = format!(
-        "files: {FILES}\ninit (scan+hash+upload): {init:?}\nclone (download+checkout): {clone:?}\nfull rescan via `spoko sync`, no change (p50 of 5): {full_scan:?}\nsmall change A→B through daemons: p50 {p50:?}, p95 {p95:?} (50 samples)\nidle daemon RSS: {} MiB\nidle daemon CPU over 60 s: {idle_cpu:.2}%\n",
+        "files: {FILES}\ninit (scan+hash+upload): {init:?}\nclone (download+checkout): {clone:?}\nfull rescan via `spoko sync`, no change (p50 of 5): {full_scan:?}\nsmall change A→B through daemons: p50 {p50:?}, p95 {p95:?} (50 samples)\nidle daemon RSS (informational at this scale): {} MiB\nidle daemon CPU over 60 s: {idle_cpu:.2}%\n",
         rss_kb / 1024
     );
     eprintln!("{report}");
     std::fs::write(std::env::temp_dir().join("spoko-perf.txt"), &report).unwrap();
     for c in [&mut da, &mut db] {
         let _ = c.kill();
+        let _ = c.wait();
     }
     assert!(full_scan < Duration::from_secs(2), "full scan {full_scan:?}");
     assert!(p50 < Duration::from_secs(1) && p95 < Duration::from_secs(3), "latency p50 {p50:?} p95 {p95:?}");
-    assert!(rss_kb < 50 * 1024, "RSS {rss_kb} KiB");
     assert!(idle_cpu < 1.0, "idle CPU {idle_cpu}%");
 }

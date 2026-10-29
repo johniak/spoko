@@ -41,8 +41,13 @@ impl StatCache {
         }
     }
 
-    pub fn save(&mut self, path: &Path) -> std::io::Result<()> {
+    /// What [`StatCache::save`] does to the in-memory cache, without writing it.
+    pub fn mark_written(&mut self) {
         self.written_at_ns = now_ns();
+    }
+
+    pub fn save(&mut self, path: &Path) -> std::io::Result<()> {
+        self.mark_written();
         let bytes = bincode::serialize(self).expect("statcache serializes");
         crate::platform::atomic_write(path, &mut &bytes[..], false)?;
         Ok(())

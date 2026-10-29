@@ -52,22 +52,6 @@ impl DerefMut for WorkMap {
     }
 }
 
-enum Node {
-    Leaf(Entry),
-    Dir(BTreeMap<String, Node>),
-}
-
-fn insert(dir: &mut BTreeMap<String, Node>, comps: &[&str], entry: Entry) {
-    if let [name] = comps {
-        dir.insert((*name).to_owned(), Node::Leaf(entry));
-    } else {
-        let child = dir.entry(comps[0].to_owned()).or_insert_with(|| Node::Dir(BTreeMap::new()));
-        if let Node::Dir(d) = child {
-            insert(d, &comps[1..], entry);
-        }
-    }
-}
-
 impl EntryMode {
     fn octal(self) -> &'static [u8] {
         match self {
@@ -80,23 +64,23 @@ impl EntryMode {
     }
 }
 
+/// git's `base_name_compare`: a tree compares as if its name ended in `/`.
+fn git_order(a: &str, a_tree: bool, b: &str, b_tree: bool) -> std::cmp::Ordering {
+    let (x, y) = (a.as_bytes(), b.as_bytes());
+    let n = x.len().min(y.len());
+    x[..n].cmp(&y[..n]).then_with(|| {
+        let next = |s: &[u8], tree: bool| s.get(n).copied().unwrap_or(if tree { b'/' } else { 0 });
+        next(x, a_tree).cmp(&next(y, b_tree))
+    })
+}
+
+type DirEntries<'a> = Vec<(&'a str, EntryMode, Oid)>;
+
 /// Canonical git tree bytes; entries sorted as git does (a directory sorts as `name/`).
-fn write_dir(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, dir: &BTreeMap<String, Node>) -> Result<Oid, git2::Error> {
-    let mut entries: Vec<(Vec<u8>, &str, EntryMode, Oid)> = Vec::with_capacity(dir.len());
-    for (name, node) in dir {
-        let (mode, oid) = match node {
-            Node::Leaf(e) => (e.mode, e.oid),
-            Node::Dir(d) => (EntryMode::Tree, write_dir(write, d)?),
-        };
-        let mut key = name.as_bytes().to_vec();
-        if mode == EntryMode::Tree {
-            key.push(b'/');
-        }
-        entries.push((key, name, mode, oid));
-    }
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+fn write_dir(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, mut entries: DirEntries<'_>) -> Result<Oid, git2::Error> {
+    entries.sort_by(|a, b| git_order(a.0, a.1 == EntryMode::Tree, b.0, b.1 == EntryMode::Tree));
     let mut buf = Vec::with_capacity(entries.len() * 40);
-    for (_, name, mode, oid) in entries {
+    for (name, mode, oid) in entries {
         buf.extend_from_slice(mode.octal());
         buf.push(b' ');
         buf.extend_from_slice(name.as_bytes());
@@ -106,12 +90,30 @@ fn write_dir(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, dir: &BTr
     write(&buf)
 }
 
+/// One pass over the path-sorted map: a directory's descendants are contiguous, so open
+/// directories form a stack and each is written when the walk leaves it.
 pub fn build_tree(write: &mut dyn FnMut(&[u8]) -> Result<Oid, git2::Error>, work: &WorkMap) -> Result<Oid, git2::Error> {
-    let mut root = BTreeMap::new();
+    let mut stack: Vec<(&str, DirEntries<'_>)> = vec![("", Vec::new())];
     for (path, entry) in work.iter() {
-        insert(&mut root, &path.components().collect::<Vec<_>>(), *entry);
+        let mut comps: Vec<&str> = path.as_str().split('/').collect();
+        let name = comps.pop().expect("non-empty path");
+        let common = comps.iter().zip(stack.iter().skip(1)).take_while(|(c, (open, _))| *c == open).count();
+        while stack.len() > common + 1 {
+            let (dir, entries) = stack.pop().expect("deeper than common");
+            let oid = write_dir(write, entries)?;
+            stack.last_mut().expect("root").1.push((dir, EntryMode::Tree, oid));
+        }
+        for c in &comps[common..] {
+            stack.push((c, Vec::new()));
+        }
+        stack.last_mut().expect("root").1.push((name, entry.mode, entry.oid));
     }
-    write_dir(write, &root)
+    while stack.len() > 1 {
+        let (dir, entries) = stack.pop().expect("len > 1");
+        let oid = write_dir(write, entries)?;
+        stack.last_mut().expect("root").1.push((dir, EntryMode::Tree, oid));
+    }
+    write_dir(write, stack.pop().expect("root").1)
 }
 
 pub fn read_tree(repo: &Repository, tree: Oid) -> Result<WorkMap, git2::Error> {

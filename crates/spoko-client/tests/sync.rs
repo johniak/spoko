@@ -678,3 +678,23 @@ fn downloaded_objects_are_known_so_next_push_skips_them() {
     let (eb, _) = b.join(ea.project_id);
     assert!(eb.known_objects() >= 50, "clone must record downloaded ids: {}", eb.known_objects());
 }
+
+#[test]
+fn big_stat_cache_is_written_lazily() {
+    let mut w = World::new();
+    let a = w.device("a");
+    for i in 0..10_001 {
+        a.write(&format!("d{}/f{i}", i % 100), "x");
+    }
+    let mut ea = a.create();
+    let path = spoko_client::engine::project_dir(&a.home, ea.project_id).join("statcache.bin");
+    let len0 = std::fs::metadata(&path).unwrap().len();
+    a.write("new.txt", "y");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    assert_eq!(std::fs::metadata(&path).unwrap().len(), len0, "not rewritten on every change");
+    let id = ea.project_id;
+    drop(ea);
+    assert!(std::fs::metadata(&path).unwrap().len() > len0, "written when the engine closes");
+    let mut ea = a.open(id);
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::UpToDate);
+}

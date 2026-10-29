@@ -16,6 +16,8 @@ pub struct Store {
     repo: Repository,
     /// Objects written inside [`Store::batch`], packed at its end.
     pending: RefCell<Option<Pending>>,
+    /// Trees known to be stored: rebuilding an unchanged directory skips the odb lookup.
+    trees: RefCell<std::collections::HashSet<Oid>>,
 }
 
 #[derive(Default)]
@@ -49,7 +51,7 @@ impl Store {
                 r
             }
         };
-        Ok(Store { repo, pending: RefCell::new(None) })
+        Ok(Store { repo, pending: RefCell::new(None), trees: RefCell::default() })
     }
 
     pub fn repo(&self) -> &Repository {
@@ -94,14 +96,28 @@ impl Store {
                 let (kind, data) = &objects[oid];
                 odb.write(*kind, data)?;
             }
-            return Ok(());
+        } else {
+            let bytes = pack::encode(order.iter().map(|o| {
+                let (k, d) = &objects[o];
+                (*k, d.as_slice())
+            }));
+            pack::write(&odb, &bytes)?;
+            odb.refresh()?;
         }
-        let bytes = pack::encode(order.iter().map(|o| {
-            let (k, d) = &objects[o];
-            (*k, d.as_slice())
-        }));
-        pack::write(&odb, &bytes)?;
-        odb.refresh()
+        for (oid, (kind, _)) in &objects {
+            self.remember_tree(*kind, *oid);
+        }
+        Ok(())
+    }
+
+    fn remember_tree(&self, kind: ObjectType, oid: Oid) {
+        if kind == ObjectType::Tree {
+            let mut t = self.trees.borrow_mut();
+            if t.len() >= 1 << 20 {
+                t.clear();
+            }
+            t.insert(oid);
+        }
     }
 
     fn pending_get<R>(&self, oid: Oid, f: impl FnOnce(ObjectType, &[u8]) -> R) -> Option<R> {
@@ -115,12 +131,13 @@ impl Store {
             // big blobs stay loose: they are read back as streams (upload chunking, checkout)
             let Some(p) = p.as_ref().filter(|_| data.len() as u64 <= BATCH_OBJECT_MAX) else { return Ok(None) };
             let oid = Oid::hash_object(kind, data)?;
-            if p.objects.contains_key(&oid) {
+            if p.objects.contains_key(&oid) || (kind == ObjectType::Tree && self.trees.borrow().contains(&oid)) {
                 return Ok(Some(oid));
             }
             oid
         };
         if self.repo.odb()?.exists_ext(oid, OdbLookupFlags::NO_REFRESH) {
+            self.remember_tree(kind, oid);
             return Ok(Some(oid));
         }
         let full = {
