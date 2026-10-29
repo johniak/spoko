@@ -44,19 +44,17 @@ mirrors it. It also works in directories that are not git repositories at all.
 cargo install --path crates/spoko          # the `spoko` CLI + daemon
 cargo install --path crates/spoko-server   # only if you host the server yourself
 
-# 1. a server (see "Self-hosting" below), then on the first machine:
-spoko login https://spoko.example.com --token <bootstrap token>
-#   → prints a recovery key: store it somewhere safe
+# 1. a server (see "Self-hosting" below) with an account for your SSH public key, then on
+#    every machine that has the key (~/.ssh/id_ed25519, id_ecdsa or id_rsa, or --key <file>):
+spoko login https://spoko.example.com
+#   → the first machine also prints a recovery key: store it somewhere safe
+#   → a key with a passphrase asks for it; the daemon then waits for `spoko unlock`
 
-# 2. every other machine pairs through one that is logged in:
-spoko login https://spoko.example.com            # prints a code + fingerprint, waits
-spoko device approve ABCD2345                    # on the logged-in machine, compare fingerprints
-
-# 3. a project
+# 2. a project
 cd ~/code/app && spoko init                      # prints the project id
 spoko clone <project id> ~/src/app               # on the other machine (empty or existing clone)
 
-# 4. run the daemon (and start it at login)
+# 3. run the daemon (and start it at login)
 spoko daemon start
 spoko daemon install
 ```
@@ -77,7 +75,10 @@ same in the menu bar.
 | `spoko volume push\|pull [name] [--fresh] [--force]` | Docker volumes |
 | `spoko hooks run\|dismiss` | pending watch hooks (`npm ci`, …) |
 | `spoko config check` | what is synced, ignored, binary, watched; largest files |
-| `spoko device list\|approve\|revoke` | devices; revoke rotates the data key |
+| `spoko login <server> [--key <file>] [--recovery-key …]` | log this machine in with the account's SSH key |
+| `spoko unlock` | give the daemon the SSH key's passphrase (once per session) |
+| `spoko key rotate --new <file>` | move the account to a new SSH key (the old one stops working) |
+| `spoko device list\|remove` | devices of the account; `remove` ends that machine's session |
 | `spoko daemon [run\|start\|stop\|install\|uninstall]` | the background process |
 
 ## `.spokoconfig`
@@ -105,7 +106,8 @@ mode = "raw"                      # raw | dump
 ```sh
 docker build -f crates/spoko-server/Dockerfile -t spoko-server .
 docker run -d -p 7420:7420 -v spoko-data:/data spoko-server
-docker exec <container> spoko-server account create jan --data /data   # prints a bootstrap token
+docker exec <container> spoko-server account create jan --data /data \
+  --ssh-key "$(cat ~/.ssh/id_ed25519.pub)"                             # the account is this key
 ```
 
 Put it behind TLS (Caddy, nginx, …). The server is a dumb store of encrypted blobs plus
@@ -114,10 +116,13 @@ compare-and-swap pointers and a WebSocket fan-out; it cannot read anything. Deta
 
 ## Security model
 
-Who has your (unlocked) computer has your code anyway — so spoko keeps the key in a
-user-only file and asks for no password. The server, its operator and the network see only
-encrypted blobs, opaque ids, sizes and timing. Lose all devices → the recovery key restores
-access. Revoking a device rotates the key. More: [`docs/security.md`](docs/security.md).
+Everything hangs on your SSH key pair: the same key on all your machines logs them in (a
+signed challenge) and unlocks the account's data key, which the server keeps only wrapped
+with that key. No spoko secret is stored on disk; a key without a passphrase starts the
+daemon without asking, a key with one asks once per session (`spoko unlock`). The server,
+its operator and the network see only encrypted blobs, opaque ids, sizes and timing. Lose
+the key → the server admin sets a new one and the recovery key brings the data back. Leaked
+key → `spoko key rotate`. More: [`docs/security.md`](docs/security.md).
 
 ## MVP limitations
 

@@ -23,7 +23,11 @@ fn first_device(srv: &TestServer, account: &str) -> (tempfile::TempDir, Identity
 }
 
 fn is_unauthorized<T>(r: spoko_client::Result<T>) -> bool {
-    matches!(r, Err(ClientError::Unauthorized))
+    match r {
+        Err(ClientError::Unauthorized) => true,
+        Err(e) => panic!("expected unauthorized, got {e}"),
+        Ok(_) => false,
+    }
 }
 
 fn server_error<T: std::fmt::Debug>(r: spoko_client::Result<T>) -> String {

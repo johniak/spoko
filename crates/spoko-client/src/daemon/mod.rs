@@ -59,8 +59,16 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     let lock_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock"))?;
     let mut lock = fd_lock::RwLock::new(lock_file);
     let _guard = lock.try_write().map_err(|_| ClientError::Other("spoko daemon is already running for this SPOKO_HOME".into()))?;
-    let identity = Identity::load(home, None)?;
     let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
+    let listener = ipc::listen(home)?;
+    let identity = match Identity::load(home, None) {
+        // a key with a passphrase: wait for `spoko unlock` instead of failing
+        Err(ClientError::Crypto(spoko_crypto::CryptoError::Encrypted)) => match wait_for_unlock(home, &listener, &local) {
+            Some(id) => id,
+            None => return remove_socket(home),
+        },
+        r => r?,
+    };
     let prompts = Arc::new(PromptTracker { inner: opts.notifier.clone(), prompts: Mutex::new(BTreeMap::new()) });
     let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), prompts.clone());
 
@@ -115,7 +123,6 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
         std::thread::spawn(move || event_loop(&url, &token, &head, &senders, &stop))
     };
 
-    let listener = ipc::listen(home)?;
     ipc::serve(&listener, &mut |req| dispatch(&identity, &projects, &prompts, req));
 
     stop.store(true, Ordering::SeqCst);
@@ -130,8 +137,32 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
         let _ = p.thread.join();
     }
     let _ = fs_thread.join();
+    remove_socket(home)
+}
+
+fn remove_socket(home: &Path) -> Result<()> {
     let _ = std::fs::remove_file(ipc::socket_path(home));
     Ok(())
+}
+
+const LOCKED: &str = "daemon is locked: the SSH key has a passphrase (run spoko unlock)";
+
+/// Answers status requests until a correct passphrase arrives (`None`: shut down meanwhile).
+fn wait_for_unlock(home: &Path, listener: &interprocess::local_socket::Listener, local: &LocalConfig) -> Option<Identity> {
+    let mut unlocked = None;
+    let device_name = local.device_name.clone().unwrap_or_default();
+    ipc::serve_until(listener, &mut |req| match req {
+        Request::Unlock { passphrase } => match Identity::load(home, Some(&passphrase)) {
+            Ok(id) => {
+                unlocked = Some(id);
+                (Response::Ok, true)
+            }
+            Err(e) => (Response::Error { message: e.to_string() }, false),
+        },
+        Request::Status => (Response::Status { report: StatusReport { device_name: device_name.clone(), projects: vec![], locked: true } }, false),
+        _ => (Response::Error { message: LOCKED.into() }, false),
+    });
+    unlocked
 }
 
 /// Passes notifications on and remembers volume prompts for the status report (tray menu).
@@ -163,7 +194,10 @@ fn dispatch(identity: &Identity, projects: &BTreeMap<Uuid, ProjectHandle>, promp
                 st
             })
             .collect();
-        return Response::Status { report: StatusReport { device_name: identity.device_name.clone(), projects } };
+        return Response::Status { report: StatusReport { device_name: identity.device_name.clone(), projects, locked: false } };
+    }
+    if let Request::Unlock { .. } = req {
+        return Response::Ok;
     }
     if let Request::VolumePull { project, volume, .. } = &req
         && let Some(list) = prompts.prompts.lock().expect("prompts").get_mut(project)

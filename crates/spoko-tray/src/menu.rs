@@ -68,6 +68,17 @@ fn state_label(s: &SyncState) -> String {
 }
 
 pub fn build(r: &StatusReport) -> MenuModel {
+    if r.locked {
+        let home = std::env::home_dir().unwrap_or_else(std::env::temp_dir);
+        return MenuModel {
+            icon: IconState::Paused,
+            tooltip: "spoko: zablokowany — podaj hasło klucza SSH".into(),
+            items: vec![
+                act("Odblokuj (hasło klucza SSH)", Action::Terminal { cwd: home, command: "spoko unlock".into() }),
+                act("Zakończ", Action::Quit),
+            ],
+        };
+    }
     let icon = r.projects.iter().map(|p| state_icon(&p.state)).max().unwrap_or(IconState::Ok);
     let mut items = Vec::new();
     for p in &r.projects {

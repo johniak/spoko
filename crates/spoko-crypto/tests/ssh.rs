@@ -127,3 +127,16 @@ fn public_key_lines_parse_without_comment() {
     assert_eq!(fp, k.fingerprint());
     assert!(spoko_crypto::parse_public_key("ssh-ed25519 nope").is_err());
 }
+
+#[test]
+fn hardware_keys_are_refused() {
+    use ssh_key::private::{KeypairData, SkEd25519};
+    use ssh_key::public::{Ed25519PublicKey, SkEd25519 as SkPublic};
+    let public = SkPublic::new(Ed25519PublicKey([7; 32]), "ssh:");
+    let data = KeypairData::SkEd25519(SkEd25519::new(public, 0, vec![1, 2, 3]).unwrap());
+    let pem = ssh_key::PrivateKey::new(data, "fido").unwrap().to_openssh(ssh_key::LineEnding::LF).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("id_ed25519_sk");
+    std::fs::write(&path, pem.as_bytes()).unwrap();
+    assert!(matches!(SshKey::load(&path, None), Err(CryptoError::UnsupportedKey)));
+}

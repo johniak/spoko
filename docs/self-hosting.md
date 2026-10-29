@@ -4,9 +4,15 @@ The server is one binary (`spoko-server`) with a data directory (SQLite + blob f
 
 ```sh
 spoko-server serve --data /var/lib/spoko --listen 0.0.0.0:7420
-spoko-server account create jan --data /var/lib/spoko   # bootstrap token for the first device
-spoko-server account token jan --data /var/lib/spoko    # another token (adding a device without pairing / recovery)
+# the account is the user's SSH public key (a key line or a path to the .pub file)
+spoko-server account create jan --ssh-key ~/.ssh/id_ed25519.pub --data /var/lib/spoko
+# the user lost the key: set the new one (ends every session); they log in with
+# `spoko login --key <new> --recovery-key …`
+spoko-server account set-key jan --ssh-key "ssh-ed25519 AAAA… new" --data /var/lib/spoko
 ```
+
+Every machine with the private key logs in on its own (`spoko login <url>`), no tokens to
+hand out.
 
 Docker: `crates/spoko-server/Dockerfile` (data in the `/data` volume, port 7420).
 

@@ -28,14 +28,27 @@ pub fn login(ctx: &Ctx, server: &str, key: Option<PathBuf>, recovery: Option<&st
         None => spoko_crypto::default_key_path(&ctx.env.home).ok_or("nie znaleziono klucza SSH (~/.ssh/id_ed25519, id_ecdsa, id_rsa); utwórz go: ssh-keygen -t ed25519, albo podaj --key")?,
     };
     let rk = recovery.map(RecoveryKey::parse).transpose().map_err(|_| "nieprawidłowy klucz odzyskiwania")?;
-    let (id, new_rk) = account::login(&ctx.home, server, &key, &name, rk.as_ref(), None)?;
+    let pass = if spoko_crypto::SshKey::is_encrypted_file(&key)? { Some(ctx.ask_passphrase(&key)?) } else { None };
+    let (id, new_rk) = account::login(&ctx.home, server, &key, &name, rk.as_ref(), pass.as_deref())?;
     save_local(ctx, &id)?;
+    super::daemon::restart_if_running(ctx, out)?;
     writeln!(out, "Zalogowano jako {} ({}) kluczem {}", id.device_name, id.device_id, id.fingerprint)?;
     if let Some(k) = new_rk {
         writeln!(out, "Klucz odzyskiwania: {}", k.to_display())?;
         writeln!(out, "Zapisz go w bezpiecznym miejscu — otworzy dane, gdyby klucz SSH przepadł.")?;
     }
     Ok(())
+}
+
+pub fn rotate_key(ctx: &Ctx, new: &std::path::Path, out: &mut dyn Write) -> Res<()> {
+    let mut id = ctx.identity()?;
+    let pass = if spoko_crypto::SshKey::is_encrypted_file(new)? { Some(ctx.ask_passphrase(new)?) } else { None };
+    let rk = account::rotate_key(&mut id, &ctx.home, new, pass.as_deref())?;
+    writeln!(out, "Konto używa teraz klucza {}; stary klucz już nie działa.", id.fingerprint)?;
+    writeln!(out, "Nowy klucz odzyskiwania: {}", rk.to_display())?;
+    writeln!(out, "Zapisz go — poprzedni otwiera już tylko dane sprzed zmiany.")?;
+    writeln!(out, "Pozostałe komputery: skopiuj nowy klucz i uruchom spoko login {}", id.server_url)?;
+    super::daemon::restart_if_running(ctx, out)
 }
 
 pub fn device(ctx: &Ctx, cmd: DeviceCmd, out: &mut dyn Write) -> Res<()> {

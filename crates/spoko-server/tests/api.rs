@@ -272,3 +272,42 @@ fn pointer_cas_409_returns_current() {
     assert_eq!(got.value, vec![3]);
     assert_eq!(h.json("PUT", &path, json!({"bad":1})).0, 422);
 }
+
+fn rotate(srv: &TestServer, token: &str, new_key: &str) -> u16 {
+    let k = test_util::key(new_key);
+    let c = challenge(srv, new_key);
+    let req = RotateKey { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), ssh_wrapped: vec![5], recovery_wrapped: vec![6] };
+    Http::new(srv, Some(token)).json("POST", "/account/key", serde_json::to_value(req).unwrap()).0
+}
+
+#[test]
+fn key_rotate_moves_the_account_to_the_new_key() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    let b = login(&srv, "id_ed25519", "linux");
+    assert_eq!(rotate(&srv, &a.token, "id_ecdsa"), 204);
+    let ha = Http::new(&srv, Some(&a.token));
+    let kr: AccountKeyring = serde_json::from_slice(&ha.get("/account/keyring").1).unwrap();
+    let new = test_util::key("id_ecdsa");
+    assert_eq!((kr.ssh_wrapped, kr.recovery_wrapped, kr.wrapped_for), (vec![5], Some(vec![6]), new.fingerprint()));
+    assert_eq!(Http::new(&srv, Some(&b.token)).get("/devices").0, 401, "other machines log in again");
+    let old = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &old, test_util::key("id_ed25519").sign(&old.nonce).unwrap()), 401, "old key is out");
+    let c = challenge(&srv, "id_ecdsa");
+    assert_eq!(try_login(&srv, &c, new.sign(&c.nonce).unwrap()), 200);
+}
+
+#[test]
+fn key_rotate_needs_the_new_key_and_a_free_one() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    login(&srv, "other_ed25519", "x");
+    assert_eq!(rotate(&srv, &a.token, "other_ed25519"), 409, "key owned by another account");
+    assert_eq!(rotate(&srv, &a.token, "id_ed25519"), 400, "the same key");
+    // a signature by another key than the one the challenge was issued for
+    let c = challenge(&srv, "id_rsa");
+    let req = RotateKey { challenge_id: c.challenge_id, signature: test_util::key("id_ecdsa").sign(&c.nonce).unwrap(), ssh_wrapped: vec![], recovery_wrapped: vec![] };
+    assert_eq!(Http::new(&srv, Some(&a.token)).json("POST", "/account/key", serde_json::to_value(req.clone()).unwrap()).0, 401);
+    assert_eq!(Http::new(&srv, None).json("POST", "/account/key", serde_json::to_value(req).unwrap()).0, 401);
+    assert_eq!(Http::new(&srv, Some(&a.token)).get("/devices").0, 200, "nothing changed");
+}

@@ -89,6 +89,22 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: Option<DaemonCmd>,
     },
+    /// Podaj daemonowi hasło klucza SSH (raz na sesję, gdy klucz ma hasło).
+    Unlock,
+    /// Klucz SSH konta.
+    Key {
+        #[command(subcommand)]
+        cmd: KeyCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCmd {
+    /// Przenieś konto na nowy klucz SSH (stary przestaje działać, inne komputery logują się ponownie).
+    Rotate {
+        #[arg(long)]
+        new: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]

@@ -180,4 +180,21 @@ fn whole_story() {
     b.ok(&["login", &srv.url], &tmp);
     b.ok(&["sync"], &pb);
     assert_eq!(read(&pb.join("after.txt")).unwrap(), "x");
+
+    // 11. new SSH key while A's daemon runs: the daemon restarts on the new key, B follows
+    a.ok(&["daemon", "start"], &tmp);
+    let new_key = a.p("h/.ssh/id_new");
+    std::fs::copy(spoko_crypto::test_util::key_path("id_ecdsa"), &new_key).unwrap();
+    let out = a.ok(&["key", "rotate", "--new", new_key.to_str().unwrap()], &tmp);
+    assert!(out.contains("Nowy klucz odzyskiwania") && out.contains("daemon uruchomiony"), "{out}");
+    assert!(a.ok(&["status"], &tmp).contains("daemon: działa"));
+    std::fs::write(pa.join("rotated.txt"), "r").unwrap();
+    // goes through the restarted daemon
+    a.ok(&["sync"], &pa);
+    let (ok, _) = b.run(&["sync"], &pb);
+    assert!(!ok, "B still has the old session");
+    b.ok(&["login", &srv.url, "--key", new_key.to_str().unwrap()], &tmp);
+    b.ok(&["sync"], &pb);
+    assert_eq!(read(&pb.join("rotated.txt")).unwrap(), "r");
+    a.ok(&["daemon", "stop"], &tmp);
 }

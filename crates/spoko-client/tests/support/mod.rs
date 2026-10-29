@@ -14,6 +14,8 @@ use uuid::Uuid;
 /// One test server shared by N devices of one account; each device has its own home and project dir.
 pub struct World {
     pub srv: TestServer,
+    /// The account's SSH key (test key name) and its passphrase.
+    key: (&'static str, Option<&'static str>),
     rk: Option<RecoveryKey>,
     pub tmp: tempfile::TempDir,
     /// Shared monotonic clock: every call is one second later, across all devices.
@@ -31,8 +33,13 @@ pub struct Device {
 
 impl World {
     pub fn new() -> World {
+        World::with_key("id_ed25519", None)
+    }
+
+    pub fn with_key(key: &'static str, passphrase: Option<&'static str>) -> World {
         World {
             srv: spawn_test_server(),
+            key: (key, passphrase),
             rk: None,
             tmp: tempfile::tempdir().unwrap(),
             clock: Arc::new(AtomicI64::new(1_700_000_000)),
@@ -48,9 +55,10 @@ impl World {
         let home = base.join("spoko-home");
         std::fs::create_dir_all(&home).unwrap();
         // every machine of the account has the same SSH key
-        let key = spoko_crypto::test_util::key_path("id_ed25519");
-        self.srv.create_account("jan", &spoko_crypto::test_util::key("id_ed25519"));
-        let (id, rk) = account::login(&home, &self.srv.url, &key, name, None, None).unwrap();
+        let (key, pass) = self.key;
+        let path = spoko_crypto::test_util::key_path(key);
+        self.srv.create_account("jan", &spoko_crypto::SshKey::load(&path, pass).unwrap());
+        let (id, rk) = account::login(&home, &self.srv.url, &path, name, None, pass).unwrap();
         if self.rk.is_none() {
             self.rk = rk;
         }

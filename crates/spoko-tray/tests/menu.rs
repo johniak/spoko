@@ -19,7 +19,7 @@ fn project(name: &str, state: SyncState) -> ProjectStatus {
 }
 
 fn report(ps: Vec<ProjectStatus>) -> StatusReport {
-    StatusReport { device_name: "mac".into(), projects: ps }
+    StatusReport { device_name: "mac".into(), projects: ps, locked: false }
 }
 
 #[test]
@@ -77,4 +77,14 @@ fn offline_when_daemon_unreachable() {
     assert!(m.items.iter().any(|i| i.label.contains("nie działa") && !i.enabled));
     assert!(m.items.iter().any(|i| i.action == Some(Action::StartDaemon)));
     assert_eq!(m.items.last().unwrap().action, Some(Action::Quit));
+}
+
+#[test]
+fn locked_daemon_offers_unlock_in_a_terminal() {
+    let m = build(&StatusReport { device_name: "mac".into(), projects: vec![], locked: true });
+    assert_eq!(m.icon, IconState::Paused);
+    assert!(m.tooltip.contains("hasło klucza SSH"), "{}", m.tooltip);
+    let unlock = m.items.iter().find(|i| i.label.starts_with("Odblokuj")).expect("unlock item");
+    assert!(matches!(&unlock.action, Some(Action::Terminal { command, .. }) if command == "spoko unlock"));
+    assert!(matches!(m.items.last().unwrap().action, Some(Action::Quit)));
 }

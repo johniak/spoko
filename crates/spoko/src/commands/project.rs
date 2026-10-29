@@ -109,22 +109,27 @@ fn state_pl(s: &SyncState) -> String {
 }
 
 pub fn status(ctx: &Ctx, json: bool, out: &mut dyn Write) -> Res<()> {
-    let id = ctx.identity()?;
     let (running, report) = match ctx.via_daemon(&Request::Status)? {
         Some(Response::Status { report }) => (true, report),
         _ => {
+            let id = ctx.identity()?;
             let mut projects = Vec::new();
             for (pid, p) in ctx.local()?.projects {
                 projects.push(offline_status(ctx, pid, &p.path)?);
             }
-            (false, StatusReport { device_name: id.device_name.clone(), projects })
+            (false, StatusReport { device_name: id.device_name.clone(), projects, locked: false })
         }
     };
     if json {
         writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
         return Ok(());
     }
-    writeln!(out, "urządzenie: {}  daemon: {}", report.device_name, if running { "działa" } else { "nie działa" })?;
+    let daemon = match (running, report.locked) {
+        (false, _) => "nie działa",
+        (true, true) => "zablokowany (spoko unlock)",
+        (true, false) => "działa",
+    };
+    writeln!(out, "urządzenie: {}  daemon: {daemon}", report.device_name)?;
     for p in &report.projects {
         writeln!(out, "{}  {}  {}", p.name, p.root.display(), state_pl(&p.state))?;
         if let Some(t) = p.last_sync {

@@ -225,3 +225,26 @@ fn daemon_start_status_stop() {
     m.ok(&["daemon", "stop"], None);
     assert!(m.ok(&["status"], None).contains("daemon: nie działa"));
 }
+
+#[test]
+fn passphrase_key_daemon_starts_locked_and_unlocks_from_stdin() {
+    let srv = spawn_test_server();
+    let m = Machine::new();
+    std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519_pass"), m.path("h/.ssh/id_ed25519")).unwrap();
+    srv.create_account("p", &spoko_crypto::SshKey::load(&spoko_crypto::test_util::key_path("id_ed25519_pass"), Some("sekret")).unwrap());
+    let with_stdin = |args: &[&str], input: &str| {
+        let o = m.cmd().args(args).write_stdin(input).output().unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+    };
+    let (ok, out, err) = with_stdin(&["login", &srv.url, "--name", "mac"], "sekret\n");
+    assert!(ok && out.contains("Zalogowano jako mac"), "{out}{err}");
+    let out = m.ok(&["daemon", "start"], None);
+    assert!(out.contains("spoko unlock"), "{out}");
+    assert!(m.ok(&["status"], None).contains("daemon: zablokowany"));
+    let (ok, _, err) = with_stdin(&["unlock"], "zle\n");
+    assert!(!ok && err.contains("wrong passphrase"), "{err}");
+    let (ok, out, err) = with_stdin(&["unlock"], "sekret\n");
+    assert!(ok && out == "Odblokowano.\n", "{out}{err}");
+    assert!(m.ok(&["status"], None).contains("daemon: działa"));
+    m.ok(&["daemon", "stop"], None);
+}

@@ -221,6 +221,24 @@ impl Db {
         Ok(())
     }
 
+    /// Moves the account to a new key with its re-wrapped keyring and logs out every device
+    /// but `keep`. `false` when another account owns the key.
+    pub fn rotate_key(&self, account: Uuid, keep: Uuid, ssh_key: &str, fingerprint: &str, ssh_wrapped: &[u8], recovery: &[u8]) -> DbResult<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let owner: Option<String> = tx.query_row("SELECT id FROM accounts WHERE ssh_key = ?1", [ssh_key], |r| r.get(0)).optional()?;
+        if owner.is_some_and(|o| o != account.to_string()) {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE accounts SET ssh_key = ?1, ssh_fingerprint = ?2, ssh_wrapped = ?3, wrapped_for = ?2, recovery_wrapped = ?4 WHERE id = ?5",
+            params![ssh_key, fingerprint, ssh_wrapped, recovery, account.to_string()],
+        )?;
+        tx.execute("UPDATE devices SET revoked = 1 WHERE account_id = ?1 AND id != ?2", params![account.to_string(), keep.to_string()])?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn list_devices(&self, account: Uuid) -> DbResult<Vec<DeviceInfo>> {
         let conn = self.conn();
         let mut st = conn.prepare("SELECT id, name, revoked, last_seen FROM devices WHERE account_id = ?1 ORDER BY name")?;

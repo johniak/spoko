@@ -21,6 +21,21 @@ use spoko_server::test_util::{TestServer, spawn_test_server};
 /// One machine: its own SPOKO_HOME, home and Claude dir.
 struct Machine {
     dir: tempfile::TempDir,
+    /// What the user types when asked for the SSH key's passphrase.
+    passphrase: fn(&str) -> std::io::Result<String>,
+}
+
+fn no_tty(_: &str) -> std::io::Result<String> {
+    Err(std::io::Error::other("no terminal"))
+}
+
+fn types_sekret(prompt: &str) -> std::io::Result<String> {
+    assert!(prompt.contains("id_ed25519"), "{prompt}");
+    Ok("sekret".into())
+}
+
+fn types_wrong(_: &str) -> std::io::Result<String> {
+    Ok("nie".into())
 }
 
 impl Machine {
@@ -30,7 +45,14 @@ impl Machine {
         let ssh = dir.path().join("h/.ssh");
         std::fs::create_dir_all(&ssh).unwrap();
         std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519"), ssh.join("id_ed25519")).unwrap();
-        Machine { dir }
+        Machine { dir, passphrase: no_tty }
+    }
+
+    /// A machine whose `~/.ssh/id_ed25519` has the passphrase `sekret`.
+    fn with_passphrase_key() -> Machine {
+        let m = Machine::new();
+        std::fs::copy(spoko_crypto::test_util::key_path("id_ed25519_pass"), m.path("h/.ssh/id_ed25519")).unwrap();
+        Machine { passphrase: types_sekret, ..m }
     }
     fn home(&self) -> PathBuf {
         self.dir.path().join("spoko-home")
@@ -43,7 +65,7 @@ impl Machine {
     }
     fn run(&self, args: &[&str], cwd: &Path) -> Result<String, String> {
         let cli = Cli::try_parse_from(std::iter::once("spoko").chain(args.iter().copied())).unwrap();
-        let mut ctx = Ctx { home: self.home(), env: self.env(), cwd: cwd.to_path_buf() };
+        let mut ctx = Ctx { home: self.home(), env: self.env(), cwd: cwd.to_path_buf(), passphrase: self.passphrase };
         let mut out = Vec::new();
         let r = commands::run(&mut ctx, cli.cmd, &mut out);
         let out = String::from_utf8(out).unwrap();
@@ -495,4 +517,69 @@ fn restore_from_a_deleted_subdirectory_brings_the_file_back_there() {
     // a directory that never existed outside any project
     let nowhere = m.path("nowhere");
     assert_eq!(m.fail(&["log"], &nowhere), format!("{} nie jest w żadnym projekcie spoko (spoko init / spoko clone)", nowhere.display()));
+}
+
+fn login_pass(srv: &TestServer, m: &Machine) -> String {
+    let key = spoko_crypto::SshKey::load(&spoko_crypto::test_util::key_path("id_ed25519_pass"), Some("sekret")).unwrap();
+    srv.create_account("p", &key);
+    m.ok(&["login", &srv.url, "--name", "mac"], &m.top())
+}
+
+#[test]
+fn login_with_a_passphrase_key_asks_for_it() {
+    let srv = spawn_test_server();
+    let m = Machine::with_passphrase_key();
+    assert!(login_pass(&srv, &m).contains("Zalogowano jako mac"));
+    // commands without the daemon ask again
+    let p = m.dir_with("app", &[("a", "a")]);
+    assert!(m.ok(&["init"], &p).contains("Projekt: "));
+    let wrong = Machine { passphrase: types_wrong, ..m };
+    assert_eq!(wrong.fail(&["status"], &wrong.top()), "crypto: wrong passphrase for the SSH key");
+    let no_tty = Machine { passphrase: no_tty, ..wrong };
+    assert_eq!(no_tty.fail(&["sync"], &p), "no terminal");
+}
+
+#[test]
+fn unlock_prompts_and_unlocks_the_daemon() {
+    let srv = spawn_test_server();
+    let m = Machine::with_passphrase_key();
+    login_pass(&srv, &m);
+    let p = m.dir_with("app", &[("a", "a")]);
+    m.ok(&["init"], &p);
+    assert_eq!(m.fail(&["unlock"], &m.top()), "daemon nie działa (spoko daemon start)");
+    let _daemon = start_daemon(&m, Arc::new(SilentVolumes));
+    let st = m.ok(&["status"], &m.top());
+    assert!(st.contains("daemon: zablokowany (spoko unlock)"), "{st}");
+    let wrong = Machine { passphrase: types_wrong, ..m };
+    assert_eq!(wrong.fail(&["unlock"], &wrong.top()), "crypto: wrong passphrase for the SSH key");
+    let m = Machine { passphrase: types_sekret, ..wrong };
+    assert_eq!(m.ok(&["unlock"], &m.top()), "Odblokowano.\n");
+    assert_eq!(m.ok(&["unlock"], &m.top()), "daemon jest już odblokowany\n");
+    let end = Instant::now() + Duration::from_secs(10);
+    while !m.ok(&["status"], &m.top()).contains("zsynchronizowany") {
+        assert!(Instant::now() < end, "project did not sync after unlock");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn key_rotate_moves_the_account_and_prints_a_new_recovery_key() {
+    let srv = spawn_test_server();
+    let (a, b) = pair_of_machines(&srv);
+    let p = a.dir_with("app", &[("a", "a")]);
+    a.ok(&["init"], &p);
+    let new = spoko_crypto::test_util::key_path("id_ed25519_pass");
+    let a = Machine { passphrase: types_sekret, ..a };
+    let out = a.ok(&["key", "rotate", "--new", new.to_str().unwrap()], &a.top());
+    let fp = spoko_crypto::SshKey::load(&new, Some("sekret")).unwrap().fingerprint();
+    assert!(out.contains(&fp) && out.contains("Nowy klucz odzyskiwania: ") && out.contains("spoko login"), "{out}");
+    // this machine keeps working with the new key, the other one has to log in again
+    std::fs::write(p.join("b"), "b").unwrap();
+    assert!(a.ok(&["sync"], &p).contains("wysłano"));
+    assert!(b.fail(&["device", "list"], &b.top()).contains("unauthorized"));
+    std::fs::copy(&new, b.path("h/.ssh/id_ed25519")).unwrap();
+    let b = Machine { passphrase: types_sekret, ..b };
+    b.ok(&["login", &srv.url, "--name", "linux"], &b.top());
+    assert!(b.ok(&["device", "list"], &b.top()).contains("linux (ten)"));
+    assert!(a.fail(&["key", "rotate", "--new", "/no/such/key"], &a.top()).starts_with("cannot read the SSH key: "));
 }

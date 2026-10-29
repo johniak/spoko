@@ -1,7 +1,7 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use spoko_proto::{AccountKeyring, Challenge, ChallengeRequest, DeviceInfo, LoginRequest, LoginResponse};
+use spoko_proto::{AccountKeyring, Challenge, ChallengeRequest, DeviceInfo, LoginRequest, LoginResponse, RotateKey};
 use uuid::Uuid;
 
 use crate::auth::AuthDevice;
@@ -29,6 +29,17 @@ pub async fn keyring(State(s): State<Shared>, auth: AuthDevice) -> ApiResult<Jso
 /// 409 when the stored keyring is already wrapped for the account's current key.
 pub async fn store_keyring(State(s): State<Shared>, auth: AuthDevice, Json(req): Json<AccountKeyring>) -> ApiResult<StatusCode> {
     if s.db.store_keyring(auth.account_id, &req.ssh_wrapped, req.recovery_wrapped.as_deref())? { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::Exists) }
+}
+
+/// 401 unless the new key signed the challenge; 409 when another account owns it.
+pub async fn rotate_key(State(s): State<Shared>, auth: AuthDevice, Json(req): Json<RotateKey>) -> ApiResult<StatusCode> {
+    let (key, nonce) = s.db.take_challenge(req.challenge_id, now())?.ok_or(ApiError::Unauthorized)?;
+    spoko_crypto::verify_signature(&key, &nonce, &req.signature).map_err(|_| ApiError::Unauthorized)?;
+    if s.db.account_by_key(&key)? == Some(auth.account_id) {
+        return Err(ApiError::BadRequest);
+    }
+    let (_, fingerprint) = spoko_crypto::parse_public_key(&key).map_err(|_| ApiError::BadRequest)?;
+    if s.db.rotate_key(auth.account_id, auth.device_id, &key, &fingerprint, &req.ssh_wrapped, &req.recovery_wrapped)? { Ok(StatusCode::NO_CONTENT) } else { Err(ApiError::Exists) }
 }
 
 pub async fn list(State(s): State<Shared>, auth: AuthDevice) -> ApiResult<Json<Vec<DeviceInfo>>> {

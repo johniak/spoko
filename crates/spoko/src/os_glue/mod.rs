@@ -51,3 +51,14 @@ pub fn spawn_daemon() -> std::io::Result<()> {
         .status()?;
     if st.success() { Ok(()) } else { Err(std::io::Error::other(format!("Start-Process failed: {st}"))) }
 }
+
+/// The SSH key's passphrase: typed without echo in a terminal, one line from a pipe otherwise.
+pub fn read_passphrase(prompt: &str) -> std::io::Result<String> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        return rpassword::prompt_password(prompt);
+    }
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(line.trim_end_matches(['\r', '\n']).to_owned())
+}

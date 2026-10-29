@@ -223,3 +223,56 @@ fn hooks_dismiss_goes_through_the_daemon() {
     stop_daemon(&a, h);
     assert!(a.open(project).state.pending_hooks.is_empty(), "the daemon's own state no longer has them");
 }
+
+#[test]
+fn locked_daemon_reports_locked_then_syncs_after_unlock() {
+    let mut w = World::with_key("id_ed25519_pass", Some("sekret"));
+    let a = w.device("a");
+    a.write("x", "1");
+    let project = a.create().project_id;
+    a.write("x", "2");
+    let h = start_daemon(&a, project);
+    let Response::Status { report } = ipc::request(&a.home, &Request::Status).unwrap() else { panic!() };
+    assert!(report.locked && report.projects.is_empty(), "{report:?}");
+    let Response::Error { message } = ipc::request(&a.home, &Request::Sync { project }).unwrap() else { panic!() };
+    assert!(message.contains("spoko unlock"), "{message}");
+    let wrong = ipc::request(&a.home, &Request::Unlock { passphrase: "nie".into() }).unwrap();
+    assert_eq!(wrong, Response::Error { message: "crypto: wrong passphrase for the SSH key".into() });
+    let Response::Status { report } = ipc::request(&a.home, &Request::Status).unwrap() else { panic!() };
+    assert!(report.locked, "still locked");
+    assert_eq!(ipc::request(&a.home, &Request::Unlock { passphrase: "sekret".into() }).unwrap(), Response::Ok);
+    wait_for(Duration::from_secs(10), || match ipc::request(&a.home, &Request::Status).unwrap() {
+        Response::Status { report } => !report.locked && report.projects.len() == 1 && report.projects[0].state == SyncState::Synced,
+        _ => false,
+    });
+    // the change made while locked was synced
+    let Response::Log { entries } = ipc::request(&a.home, &Request::Log { project, path: None, limit: 10 }).unwrap() else { panic!() };
+    assert_eq!(entries.len(), 2);
+    assert_eq!(ipc::request(&a.home, &Request::Unlock { passphrase: "sekret".into() }).unwrap(), Response::Ok, "already unlocked");
+    stop_daemon(&a, h);
+}
+
+#[test]
+fn locked_daemon_shuts_down_cleanly() {
+    let mut w = World::with_key("id_ed25519_pass", Some("sekret"));
+    let a = w.device("a");
+    a.write("x", "1");
+    let project = a.create().project_id;
+    let h = start_daemon(&a, project);
+    stop_daemon(&a, h);
+    assert!(ipc::request(&a.home, &Request::Status).is_err(), "daemon gone");
+}
+
+#[cfg(unix)]
+#[test]
+fn ipc_socket_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut w = World::new();
+    let a = w.device("a");
+    a.write("x", "1");
+    let project = a.create().project_id;
+    let h = start_daemon(&a, project);
+    let mode = std::fs::metadata(ipc::socket_path(&a.home)).unwrap().permissions().mode();
+    assert_eq!(mode & 0o077, 0, "socket mode {mode:o}: a passphrase crosses it");
+    stop_daemon(&a, h);
+}

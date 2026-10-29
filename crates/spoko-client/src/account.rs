@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use spoko_crypto::{Keyring, RecoveryKey, SshKey, read_private_file, write_private_file};
-use spoko_proto::{AccountKeyring, LoginRequest};
+use spoko_proto::{AccountKeyring, LoginRequest, RotateKey};
 use uuid::Uuid;
 
 use crate::api::ApiClient;
@@ -165,6 +165,33 @@ fn account_keyring(api: &ApiClient, key: &SshKey, stored: Option<AccountKeyring>
     let keyring = Keyring::from_bytes(&rk.unwrap(&wrapped)?)?;
     api.store_keyring(&AccountKeyring { ssh_wrapped: key.wrap_keyring(&keyring), wrapped_for: String::new(), recovery_wrapped: None })?;
     Ok((keyring, None))
+}
+
+/// Moves the account to the SSH key at `new_key`: new data gets a new key version, the old
+/// key stops working, every other machine is logged out (it logs in again with the new key).
+/// Returns the new recovery key; the old one opens only data from before the rotation.
+pub fn rotate_key(id: &mut Identity, home: &Path, new_key: &Path, passphrase: Option<&str>) -> Result<RecoveryKey> {
+    let key = SshKey::load(new_key, passphrase)?;
+    let api = id.api();
+    let challenge = api.challenge(&key.public_openssh())?;
+    let mut keyring = id.keyring.clone();
+    keyring.rotate();
+    let rk = RecoveryKey::generate();
+    let req = RotateKey {
+        challenge_id: challenge.challenge_id,
+        signature: key.sign(&challenge.nonce)?,
+        ssh_wrapped: key.wrap_keyring(&keyring),
+        recovery_wrapped: rk.wrap(&keyring.to_bytes()),
+    };
+    if !api.rotate_key(&req)? {
+        return Err(ClientError::Other("that SSH key already belongs to another account".into()));
+    }
+    id.key_path = std::path::absolute(new_key)?;
+    id.fingerprint = key.fingerprint();
+    id.wrapped_keyring = req.ssh_wrapped;
+    id.keyring = keyring;
+    id.save(home)?;
+    Ok(rk)
 }
 
 /// Logs a device of this account out (its session token stops working). Not a security

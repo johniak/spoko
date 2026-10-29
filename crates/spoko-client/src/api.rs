@@ -81,10 +81,12 @@ impl ApiClient {
     }
 
     fn get_raw(&self, path: &str, token: Option<&str>) -> Result<(u16, Vec<u8>)> {
-        Self::check(
-            self.auth(self.agent.get(format!("{}{path}", self.base)), token)
-                .call(),
-        )
+        let get = || Self::check(self.auth(self.agent.get(format!("{}{path}", self.base)), token).call());
+        match get() {
+            // a pooled connection the server already closed: a GET is safe to send again
+            Err(ClientError::Network(_)) => get(),
+            r => r,
+        }
     }
 
     fn get_ok<T: DeserializeOwned>(&self, path: &str, token: Option<&str>) -> Result<Option<T>> {
@@ -135,6 +137,14 @@ impl ApiClient {
     /// `false` when the server already has a keyring wrapped for the account's current key.
     pub fn store_keyring(&self, kr: &AccountKeyring) -> Result<bool> {
         match self.send_json("PUT", "/account/keyring", kr, None)? {
+            (409, _) => Ok(false),
+            r => Self::expect_ok(r).map(|_| true),
+        }
+    }
+
+    /// `false` when another account owns the new key.
+    pub fn rotate_key(&self, req: &RotateKey) -> Result<bool> {
+        match self.send_json("POST", "/account/key", req, None)? {
             (409, _) => Ok(false),
             r => Self::expect_ok(r).map(|_| true),
         }

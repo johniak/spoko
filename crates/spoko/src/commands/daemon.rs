@@ -2,7 +2,8 @@ use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use spoko_client::daemon::ipc::{self, Request};
+use spoko_client::account::Identity;
+use spoko_client::daemon::ipc::{self, Request, Response};
 use spoko_client::daemon::{self, DaemonOpts};
 use spoko_client::notifier::Notifier;
 use spoko_client::os_glue::notify_native::NativeNotifier;
@@ -36,6 +37,9 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
             crate::os_glue::spawn_daemon()?;
             wait(ctx, true)?;
             writeln!(out, "daemon uruchomiony")?;
+            if locked(ctx)? {
+                writeln!(out, "klucz SSH ma hasło: odblokuj daemon poleceniem spoko unlock")?;
+            }
         }
         DaemonCmd::Stop => {
             if ctx.daemon_running() {
@@ -48,4 +52,36 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
         DaemonCmd::Uninstall => crate::os_glue::autostart(false, out)?,
     }
     Ok(())
+}
+
+fn locked(ctx: &Ctx) -> Res<bool> {
+    Ok(matches!(ipc::request(&ctx.home, &Request::Status)?, Response::Status { report } if report.locked))
+}
+
+/// `spoko unlock`: the passphrase goes to the running daemon, which keeps the key in memory only.
+pub fn unlock(ctx: &Ctx, out: &mut dyn Write) -> Res<()> {
+    if !ctx.daemon_running() {
+        return err("daemon nie działa (spoko daemon start)");
+    }
+    if !locked(ctx)? {
+        writeln!(out, "daemon jest już odblokowany")?;
+        return Ok(());
+    }
+    let passphrase = ctx.ask_passphrase(&Identity::key_path(&ctx.home)?)?;
+    match ipc::request(&ctx.home, &Request::Unlock { passphrase })? {
+        Response::Error { message } => err(message),
+        _ => {
+            writeln!(out, "Odblokowano.")?;
+            Ok(())
+        }
+    }
+}
+
+/// After a new login or key the running daemon still has the old session: start it again.
+pub fn restart_if_running(ctx: &Ctx, out: &mut dyn Write) -> Res<()> {
+    if !ctx.daemon_running() {
+        return Ok(());
+    }
+    run(ctx, Some(DaemonCmd::Stop), &mut std::io::sink())?;
+    run(ctx, Some(DaemonCmd::Start), out)
 }

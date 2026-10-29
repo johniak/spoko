@@ -34,13 +34,15 @@ pub enum Request {
     VolumePull { project: Uuid, volume: Option<String>, force: bool, fresh: bool },
     Log { project: Uuid, path: Option<String>, limit: usize },
     Restore { project: Uuid, path: String, from: RestoreSpec },
+    /// The SSH key's passphrase, for a daemon that started locked.
+    Unlock { passphrase: String },
     Shutdown,
 }
 
 impl Request {
     pub fn project(&self) -> Option<Uuid> {
         match self {
-            Request::Status | Request::Shutdown => None,
+            Request::Status | Request::Unlock { .. } | Request::Shutdown => None,
             Request::Sync { project }
             | Request::Pause { project }
             | Request::Resume { project, .. }
@@ -91,6 +93,9 @@ pub struct ProjectStatus {
 pub struct StatusReport {
     pub device_name: String,
     pub projects: Vec<ProjectStatus>,
+    /// Waiting for `spoko unlock` (the SSH key has a passphrase); nothing syncs meanwhile.
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,11 +146,31 @@ fn name(home: &Path) -> std::io::Result<Name<'static>> {
 
 pub fn listen(home: &Path) -> Result<interprocess::local_socket::Listener> {
     // the daemon lock guarantees a single owner, so a leftover socket file is stale
-    Ok(ListenerOptions::new().name(name(home)?).try_overwrite(true).create_sync()?)
+    let listener = ListenerOptions::new().name(name(home)?).try_overwrite(true).create_sync()?;
+    owner_only(home)?;
+    Ok(listener)
+}
+
+/// A passphrase crosses the socket: only this user may connect. (Windows pipes already
+/// allow only their creator to write.)
+#[cfg(unix)]
+fn owner_only(home: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(socket_path(home), std::fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn owner_only(_home: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// Serves connections until a `Shutdown` request.
 pub fn serve(listener: &interprocess::local_socket::Listener, handle: &mut dyn FnMut(Request) -> Response) {
+    serve_until(listener, &mut |req| (handle(req), false));
+}
+
+/// Like [`serve`], but also stops after a request for which `handle` says so.
+pub fn serve_until(listener: &interprocess::local_socket::Listener, handle: &mut dyn FnMut(Request) -> (Response, bool)) {
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         if serve_one(conn, handle).unwrap_or(false) {
@@ -154,14 +179,14 @@ pub fn serve(listener: &interprocess::local_socket::Listener, handle: &mut dyn F
     }
 }
 
-/// Reads one request from a connection and writes `handle`'s response.
-pub fn serve_one(conn: Stream, handle: &mut dyn FnMut(Request) -> Response) -> Result<bool> {
+/// Reads one request from a connection and writes `handle`'s response; `true` = stop serving.
+pub fn serve_one(conn: Stream, handle: &mut dyn FnMut(Request) -> (Response, bool)) -> Result<bool> {
     let mut reader = BufReader::new(conn);
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let (resp, shutdown) = match serde_json::from_str::<Request>(&line) {
         Ok(Request::Shutdown) => (Response::Ok, true),
-        Ok(req) => (handle(req), false),
+        Ok(req) => handle(req),
         Err(e) => (Response::Error { message: format!("bad request: {e}") }, false),
     };
     let mut out = serde_json::to_vec(&resp).expect("response serializes");

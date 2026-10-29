@@ -56,7 +56,7 @@ fn unknown_subcommand_prints_usage_and_exits_2() {
     let o = Machine::new().cmd(&["frobnicate"]).output().unwrap();
     assert_eq!(o.status.code(), Some(2));
     let err = String::from_utf8_lossy(&o.stderr);
-    assert!(err.contains("unrecognized subcommand 'frobnicate'") && err.contains("Usage: spoko <COMMAND>"), "{err}");
+    assert!(err.contains("unrecognized subcommand 'frobnicate'") && (err.contains("Usage: spoko <COMMAND>") || err.contains("Usage: spoko.exe <COMMAND>")), "{err}");
 }
 
 #[test]

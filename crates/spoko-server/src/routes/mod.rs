@@ -14,6 +14,7 @@ pub fn router() -> Router<Shared> {
         .route("/auth/challenge", post(devices::challenge))
         .route("/auth/login", post(devices::login))
         .route("/account/keyring", get(devices::keyring).put(devices::store_keyring))
+        .route("/account/key", post(devices::rotate_key))
         .route("/devices", get(devices::list))
         .route("/devices/{id}", delete(devices::revoke))
         .route("/projects", post(projects::create).get(projects::list))

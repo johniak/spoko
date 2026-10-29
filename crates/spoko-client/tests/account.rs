@@ -240,3 +240,31 @@ fn project_objects_implement_object_server() {
     objs.put(&[(id, b"sealed".to_vec())]).unwrap();
     assert_eq!(objs.get(&[id]).unwrap(), vec![(id, b"sealed".to_vec())]);
 }
+
+#[test]
+fn key_rotate_old_key_rejected_other_devices_relogin() {
+    let srv = spawn_test_server();
+    let home_a = tempfile::tempdir().unwrap();
+    let (mut a, old_rk) = login_in(&srv, home_a.path(), "id_ed25519", "mac", None).unwrap();
+    let (b, _) = login(&srv, "linux");
+    let before = a.keyring.clone();
+    let new_rk = account::rotate_key(&mut a, home_a.path(), &test_util::key_path("id_ed25519_pass"), Some("sekret")).unwrap();
+    assert_eq!(a.keyring.current().0, before.current().0 + 1, "new data gets a new key version");
+    assert_eq!(a.fingerprint, SshKeyPass::load().fingerprint());
+    assert_eq!(Identity::load(home_a.path(), Some("sekret")).unwrap().keyring, a.keyring, "saved");
+    assert!(matches!(b.api().devices(), Err(spoko_client::ClientError::Unauthorized)));
+    // the other machine logs in with the new key and gets the rotated keyring
+    let (b2, _) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("id_ed25519_pass"), "linux", None, Some("sekret")).unwrap();
+    assert_eq!(b2.keyring, a.keyring);
+    let old = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("id_ed25519"), "x", None, None);
+    assert!(matches!(old, Err(spoko_client::ClientError::Unauthorized)));
+    // the new recovery key opens the new keyring; the old one only what it wrapped
+    let kr = srv.state.db.account_keyring(srv.state.db.account_by_key(&SshKeyPass::load().public_openssh()).unwrap().unwrap()).unwrap().unwrap();
+    let rec = kr.recovery_wrapped.unwrap();
+    assert_eq!(Keyring::from_bytes(&new_rk.unwrap(&rec).unwrap()).unwrap(), a.keyring);
+    assert!(old_rk.unwrap().unwrap(&rec).is_err());
+    // rotating to a key of another account fails and changes nothing
+    srv.create_account("other", &test_util::key("other_ed25519"));
+    assert!(account::rotate_key(&mut a, home_a.path(), &test_util::key_path("other_ed25519"), None).is_err());
+    assert_eq!(a.fingerprint, SshKeyPass::load().fingerprint());
+}

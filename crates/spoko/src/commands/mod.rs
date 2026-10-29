@@ -10,12 +10,14 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use spoko_client::ClientError;
 use spoko_client::account::Identity;
 use spoko_client::daemon::ipc::{self, Request, Response};
 use spoko_client::engine::{DeviceCtx, Engine};
 use spoko_client::notifier::{Notification, Notifier};
 use spoko_core::config::{LocalConfig, spoko_home};
 use spoko_core::external::ExternalEnv;
+use spoko_crypto::CryptoError;
 use uuid::Uuid;
 
 use crate::cli::Cmd;
@@ -38,19 +40,31 @@ impl Notifier for PrintNotifier {
 pub struct Ctx {
     pub home: PathBuf,
     pub env: ExternalEnv,
+    /// Asks the user for the SSH key's passphrase (prompt → answer).
+    pub passphrase: fn(&str) -> std::io::Result<String>,
     pub cwd: PathBuf,
 }
 
 impl Ctx {
     pub fn from_env() -> Ctx {
-        Ctx { home: spoko_home(), env: ExternalEnv::from_process(), cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) }
+        Ctx { home: spoko_home(), env: ExternalEnv::from_process(), passphrase: crate::os_glue::read_passphrase, cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")) }
     }
 
     pub fn identity(&self) -> Res<Identity> {
         if !self.home.join(spoko_client::account::IDENTITY_FILE).exists() {
             return err("ten komputer nie jest zalogowany (spoko login <serwer>)");
         }
-        Ok(Identity::load(&self.home, None)?)
+        match Identity::load(&self.home, None) {
+            Err(ClientError::Crypto(CryptoError::Encrypted)) => {
+                let pass = self.ask_passphrase(&Identity::key_path(&self.home)?)?;
+                Ok(Identity::load(&self.home, Some(&pass))?)
+            }
+            r => Ok(r?),
+        }
+    }
+
+    pub fn ask_passphrase(&self, key: &Path) -> Res<String> {
+        Ok((self.passphrase)(&format!("Hasło klucza {}: ", key.display()))?)
     }
 
     pub fn device_ctx(&self, id: &Identity) -> DeviceCtx {
@@ -126,6 +140,8 @@ pub fn run(ctx: &mut Ctx, cmd: Cmd, out: &mut dyn Write) -> Res<()> {
         Cmd::Hooks { cmd } => project::hooks(ctx, cmd, out),
         Cmd::Config { cmd: crate::cli::ConfigCmd::Check } => config::check(ctx, out),
         Cmd::Daemon { cmd } => daemon::run(ctx, cmd, out),
+        Cmd::Unlock => daemon::unlock(ctx, out),
+        Cmd::Key { cmd: crate::cli::KeyCmd::Rotate { new } } => account::rotate_key(ctx, &new, out),
     }
 }
 
