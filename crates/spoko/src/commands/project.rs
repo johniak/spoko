@@ -38,10 +38,23 @@ pub fn init(ctx: &Ctx, path: Option<PathBuf>, name: Option<String>, out: &mut dy
     Ok(())
 }
 
-pub fn clone(ctx: &Ctx, project: &str, path: Option<PathBuf>, out: &mut dyn Write) -> Res<()> {
+pub fn clone(ctx: &Ctx, project: &str, path: Option<PathBuf>, join: bool, out: &mut dyn Write) -> Res<()> {
     let project: Uuid = project.parse().map_err(|_| format!("„{project}” to nie jest identyfikator projektu"))?;
-    let root = canonical_dir(ctx, path)?;
     let id = ctx.identity()?;
+    // like git clone: a new directory named after the project, never the current one
+    let path = match path {
+        Some(p) => p,
+        None => PathBuf::from(project_name(&id, project)?.unwrap_or_else(|| project.to_string())),
+    };
+    let target = if path.is_absolute() { path } else { ctx.cwd.join(path) };
+    let non_empty = std::fs::read_dir(&target).is_ok_and(|mut d| d.next().is_some());
+    if non_empty && !join {
+        return err(format!(
+            "katalog {} nie jest pusty. Jeśli to kopia tego projektu, dodaj --join (lokalne różnice trafią do snapshotu dołączenia: spoko restore <plik> --from-join)",
+            target.display()
+        ));
+    }
+    let root = canonical_dir(ctx, Some(target))?;
     let (_e, report) = Engine::clone_into(ctx.device_ctx(&id), project, &root)?;
     ctx.register(project, &root)?;
     writeln!(out, "Projekt: {project}\nKatalog: {}", root.display())?;
@@ -49,6 +62,13 @@ pub fn clone(ctx: &Ctx, project: &str, path: Option<PathBuf>, out: &mut dyn Writ
         writeln!(out, "Lokalne różnice ({} plików) zachowano w snapshocie dołączenia; przywrócisz je: spoko restore <plik> --from-join", report.differing.len())?;
     }
     Ok(())
+}
+
+/// The project's name as `init` stored it (encrypted); `None` when it is not a usable directory name.
+fn project_name(id: &spoko_client::account::Identity, project: Uuid) -> Res<Option<String>> {
+    let Some(p) = id.api().projects()?.into_iter().find(|p| p.id == project) else { return err(format!("nie ma projektu {project} na tym koncie")) };
+    let name = spoko_crypto::open(&id.keyring, b"project", &p.encrypted_meta).ok().and_then(|b| String::from_utf8(b).ok());
+    Ok(name.filter(|n| !n.is_empty() && n != "." && n != ".." && !n.contains(['/', '\\'])))
 }
 
 fn outcome_pl(o: SyncOutcome) -> String {

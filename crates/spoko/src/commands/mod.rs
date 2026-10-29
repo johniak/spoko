@@ -119,6 +119,8 @@ impl Ctx {
         let mut local = self.local()?;
         local.projects.insert(project, spoko_core::config::LocalProject { path: root.to_path_buf(), paused: false });
         local.save(&self.home)?;
+        // a running daemon picks the new project up without a restart (or a new passphrase)
+        self.via_daemon(&Request::Reload)?;
         Ok(())
     }
 }
@@ -128,7 +130,7 @@ pub fn run(ctx: &mut Ctx, cmd: Cmd, out: &mut dyn Write) -> Res<()> {
         Cmd::Login { server, key, recovery_key, name } => account::login(ctx, &server, key, recovery_key.as_deref(), name, out),
         Cmd::Device { cmd } => account::device(ctx, cmd, out),
         Cmd::Init { path, name } => project::init(ctx, path, name, out),
-        Cmd::Clone { project, path } => project::clone(ctx, &project, path, out),
+        Cmd::Clone { project, path, join } => project::clone(ctx, &project, path, join, out),
         Cmd::Sync => project::sync(ctx, out),
         Cmd::Status { json } => project::status(ctx, json, out),
         Cmd::Resolve { path, done } => project::resolve(ctx, path, done, out),

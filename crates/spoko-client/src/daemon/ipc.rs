@@ -36,13 +36,15 @@ pub enum Request {
     Restore { project: Uuid, path: String, from: RestoreSpec },
     /// The SSH key's passphrase, for a daemon that started locked.
     Unlock { passphrase: String },
+    /// Projects were added or removed in `LocalConfig`: restart the workers.
+    Reload,
     Shutdown,
 }
 
 impl Request {
     pub fn project(&self) -> Option<Uuid> {
         match self {
-            Request::Status | Request::Unlock { .. } | Request::Shutdown => None,
+            Request::Status | Request::Unlock { .. } | Request::Reload | Request::Shutdown => None,
             Request::Sync { project }
             | Request::Pause { project }
             | Request::Resume { project, .. }

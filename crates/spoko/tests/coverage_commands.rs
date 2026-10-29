@@ -88,6 +88,7 @@ impl Machine {
         let p = self.path(rel);
         std::fs::create_dir_all(&p).unwrap();
         for (name, body) in files {
+            std::fs::create_dir_all(p.join(name).parent().unwrap()).unwrap();
             std::fs::write(p.join(name), body).unwrap();
         }
         p.canonicalize().unwrap()
@@ -199,7 +200,7 @@ fn clone_into_a_non_empty_directory_keeps_local_differences_for_restore() {
     let pa = a.dir_with("app", &[("notes.txt", "from mac\n"), ("same.txt", "same\n")]);
     let id = project_id(&a.ok(&["init"], &pa));
     let pb = b.dir_with("app", &[("notes.txt", "my local notes\n"), ("same.txt", "same\n")]);
-    let out = b.ok(&["clone", &id], &pb);
+    let out = b.ok(&["clone", &id, ".", "--join"], &pb);
     assert!(out.contains("Lokalne różnice (1 plików) zachowano w snapshocie dołączenia"), "{out}");
     assert_eq!(read(&pb.join("notes.txt")), "from mac\n");
     assert_eq!(b.ok(&["restore", "notes.txt", "--from-join"], &pb), "Przywrócono notes.txt\n");
@@ -582,4 +583,37 @@ fn key_rotate_moves_the_account_and_prints_a_new_recovery_key() {
     b.ok(&["login", &srv.url, "--name", "linux"], &b.top());
     assert!(b.ok(&["device", "list"], &b.top()).contains("linux (ten)"));
     assert!(a.fail(&["key", "rotate", "--new", "/no/such/key"], &a.top()).starts_with("cannot read the SSH key: "));
+}
+
+#[test]
+fn clone_without_a_path_makes_a_project_directory_and_touches_nothing_else() {
+    let srv = spawn_test_server();
+    let (a, b) = pair_of_machines(&srv);
+    let pa = a.dir_with("app", &[("main.rs", "fn main() {}\n")]);
+    let id = project_id(&a.ok(&["init"], &pa));
+    // a parent folder full of other work, like ~/Projects
+    let parent = b.dir_with("Projects", &[("other-repo/wip.rs", "uncommitted\n"), ("README.txt", "mine\n")]);
+    let out = b.ok(&["clone", &id], &parent);
+    assert!(out.contains(&format!("Katalog: {}", parent.join("app").display())), "{out}");
+    assert_eq!(read(&parent.join("app/main.rs")), "fn main() {}\n");
+    assert_eq!(read(&parent.join("other-repo/wip.rs")), "uncommitted\n");
+    assert_eq!(read(&parent.join("README.txt")), "mine\n");
+}
+
+#[test]
+fn clone_into_a_non_empty_directory_needs_join() {
+    let srv = spawn_test_server();
+    let (a, b) = pair_of_machines(&srv);
+    let pa = a.dir_with("app", &[("main.rs", "fn main() {}\n")]);
+    let id = project_id(&a.ok(&["init"], &pa));
+    let other = b.dir_with("Projects", &[("other-repo/wip.rs", "uncommitted\n")]);
+    let err = b.fail(&["clone", &id, "."], &other);
+    assert!(err.contains("nie jest pusty") && err.contains("--join"), "{err}");
+    assert_eq!(read(&other.join("other-repo/wip.rs")), "uncommitted\n");
+    assert!(!other.join("main.rs").exists());
+    assert!(spoko_core::config::LocalConfig::load(&b.home()).unwrap().projects.is_empty(), "nothing registered");
+    // a target named like the project that already holds other things is refused too
+    let parent = b.dir_with("P2", &[("app/mine.txt", "x")]);
+    assert!(b.fail(&["clone", &id], &parent).contains("--join"));
+    assert!(parent.join("app/mine.txt").exists());
 }

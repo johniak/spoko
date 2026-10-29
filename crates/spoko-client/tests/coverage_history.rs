@@ -117,3 +117,35 @@ fn hook_for_a_missing_project_directory_fails_and_stays_pending() {
     let log = std::fs::read_to_string(e.data_dir().join("hooks.log")).unwrap();
     assert!(log.contains("[exit -1]"), "{log}");
 }
+
+#[test]
+fn restore_keeps_the_unsynced_current_version_in_a_snapshot() {
+    let mut w = World::new();
+    let a = w.device("a");
+    a.write("main.rs", "v1");
+    let mut ea = a.create();
+    let v1 = ea.state.base.unwrap();
+    // edited, never captured (no daemon), then restored over
+    a.write("main.rs", "v2 unsaved work");
+    history::restore(&mut ea, &RelPath::new("main.rs"), RestoreFrom::Commit(v1)).unwrap();
+    assert_eq!(a.text("main.rs"), "v1");
+    let entries = history::log(&ea, Some(&RelPath::new("main.rs")), 10).unwrap();
+    let saved = entries.iter().find(|e| e.commit != v1 && e.changed).expect("the overwritten version has a snapshot").commit;
+    history::restore(&mut ea, &RelPath::new("main.rs"), RestoreFrom::Commit(saved)).unwrap();
+    assert_eq!(a.text("main.rs"), "v2 unsaved work");
+}
+
+#[test]
+fn restoring_a_file_that_did_not_exist_yet_keeps_it_in_a_snapshot() {
+    let mut w = World::new();
+    let a = w.device("a");
+    a.write("old.txt", "o");
+    let mut ea = a.create();
+    let before = ea.state.base.unwrap();
+    a.write("new.txt", "only here");
+    history::restore(&mut ea, &RelPath::new("new.txt"), RestoreFrom::Commit(before)).unwrap();
+    assert!(a.read("new.txt").is_none());
+    let saved = history::log(&ea, None, 10).unwrap()[0].commit;
+    history::restore(&mut ea, &RelPath::new("new.txt"), RestoreFrom::Commit(saved)).unwrap();
+    assert_eq!(a.text("new.txt"), "only here");
+}

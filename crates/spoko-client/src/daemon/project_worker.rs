@@ -229,7 +229,7 @@ impl Worker {
             Request::VolumePush { .. } | Request::VolumePull { .. } => {
                 Ok(self.ext.handle(&mut self.engine, req).unwrap_or_else(|| Response::Error { message: "this build has no Docker support".into() }))
             }
-            Request::Status | Request::Unlock { .. } | Request::Shutdown => Ok(Response::Ok),
+            Request::Status | Request::Unlock { .. } | Request::Reload | Request::Shutdown => Ok(Response::Ok),
         }
     }
 }

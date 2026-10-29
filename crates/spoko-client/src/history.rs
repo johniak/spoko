@@ -73,7 +73,8 @@ pub fn log(e: &Engine, path: Option<&RelPath>, limit: usize) -> Result<Vec<LogEn
     Ok(out)
 }
 
-/// Writes `path` as it was in an older snapshot. It becomes an ordinary local change.
+/// Writes `path` as it was in an older snapshot, after saving the current version in a new
+/// snapshot. It becomes an ordinary local change.
 pub fn restore(e: &mut Engine, path: &RelPath, from: RestoreFrom) -> Result<()> {
     let snapshot = match from {
         RestoreFrom::Commit(o) => o,
@@ -82,6 +83,8 @@ pub fn restore(e: &mut Engine, path: &RelPath, from: RestoreFrom) -> Result<()> 
             log(e, None, usize::MAX)?.into_iter().find(|x| x.time <= t).ok_or_else(|| ClientError::Other(format!("no local snapshot at or before {t}")))?.commit
         }
     };
+    // what is on disk now goes into a snapshot first, so the restore can be undone
+    e.capture(Some(&std::iter::once(path.clone()).collect()))?;
     let abs = path.to_fs(&e.root);
     match entry_at(e, snapshot, path)? {
         Some((oid, 0o120000)) => {

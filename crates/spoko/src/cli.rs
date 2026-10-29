@@ -39,7 +39,14 @@ pub enum Cmd {
         name: Option<String>,
     },
     /// Istniejący projekt do katalogu (pusty: checkout; niepusty: dołączenie).
-    Clone { project: String, path: Option<PathBuf> },
+    /// Pobierz projekt do nowego katalogu (domyślnie ./<nazwa projektu>).
+    Clone {
+        project: String,
+        path: Option<PathBuf>,
+        /// Katalog nie jest pusty, bo to już kopia projektu: połącz (różnice → snapshot dołączenia).
+        #[arg(long)]
+        join: bool,
+    },
     /// Jednorazowa synchronizacja (bieżący projekt albo wszystkie).
     Sync,
     Status {

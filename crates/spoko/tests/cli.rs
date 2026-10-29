@@ -222,6 +222,13 @@ fn daemon_start_status_stop() {
     }
     // project commands go through the daemon now
     assert!(m.ok(&["sync"], Some(&p)).contains("ok"));
+    // a project added while the daemon runs is synced by it straight away
+    let q = m.path("second");
+    std::fs::create_dir_all(&q).unwrap();
+    std::fs::write(q.join("b"), "b").unwrap();
+    m.ok(&["init"], Some(&q));
+    assert!(m.ok(&["sync"], Some(&q)).contains("ok"));
+    assert!(m.ok(&["status"], None).contains("second"));
     m.ok(&["daemon", "stop"], None);
     assert!(m.ok(&["status"], None).contains("daemon: nie działa"));
 }

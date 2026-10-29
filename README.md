@@ -53,7 +53,7 @@ spoko login https://spoko.example.com
 
 # 2. a project
 cd ~/code/app && spoko init                      # prints the project id
-spoko clone <project id> ~/src/app               # on the other machine (empty or existing clone)
+spoko clone <project id>                         # on the other machine: ./<name> (--join for an existing copy)
 
 # 3. run the daemon (and start it at login)
 spoko daemon start

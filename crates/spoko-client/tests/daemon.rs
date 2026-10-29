@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 use spoko_client::daemon::ipc::{self, Request, Response, SyncState};
 use spoko_client::daemon::watcher::{Debouncer, MAX_DELAY, QUIET};
 use spoko_client::daemon::{self, DaemonOpts, NoExtensions, autostart};
+use spoko_client::engine::Engine;
 use spoko_core::config::{LocalConfig, LocalProject};
 use spoko_core::platform::RelPath;
 use support::*;
@@ -274,5 +275,37 @@ fn ipc_socket_is_owner_only() {
     let h = start_daemon(&a, project);
     let mode = std::fs::metadata(ipc::socket_path(&a.home)).unwrap().permissions().mode();
     assert_eq!(mode & 0o077, 0, "socket mode {mode:o}: a passphrase crosses it");
+    stop_daemon(&a, h);
+}
+
+#[test]
+fn reload_picks_up_a_project_added_while_running() {
+    let mut w = World::with_key("id_ed25519_pass", Some("sekret"));
+    let a = w.device("a");
+    a.write("x", "1");
+    let first = a.create().project_id;
+    let h = start_daemon(&a, first);
+    assert_eq!(ipc::request(&a.home, &Request::Unlock { passphrase: "sekret".into() }).unwrap(), Response::Ok);
+    // a second project, registered the way `spoko init` does it
+    let root2 = a.root.parent().unwrap().join("second");
+    std::fs::create_dir_all(&root2).unwrap();
+    std::fs::write(root2.join("y"), "2").unwrap();
+    let second = Engine::create(a.ctx.clone(), &root2, "second").unwrap().project_id;
+    let mut lc = LocalConfig::load(&a.home).unwrap();
+    lc.projects.insert(second, LocalProject { path: root2.clone(), paused: false });
+    lc.save(&a.home).unwrap();
+    assert!(matches!(ipc::request(&a.home, &Request::Sync { project: second }).unwrap(), Response::Error { .. }), "not known yet");
+    assert_eq!(ipc::request(&a.home, &Request::Reload).unwrap(), Response::Ok);
+    wait_for(Duration::from_secs(10), || match ipc::request(&a.home, &Request::Status) {
+        Ok(Response::Status { report }) => !report.locked && report.projects.len() == 2,
+        _ => false,
+    });
+    assert_eq!(ipc::request(&a.home, &Request::Sync { project: second }).unwrap(), Response::Ok, "no new passphrase needed");
+    // and the watcher covers it: a change there gets captured
+    std::fs::write(root2.join("y"), "changed").unwrap();
+    wait_for(Duration::from_secs(10), || match ipc::request(&a.home, &Request::Log { project: second, path: None, limit: 10 }) {
+        Ok(Response::Log { entries }) => entries.len() >= 2,
+        _ => false,
+    });
     stop_daemon(&a, h);
 }

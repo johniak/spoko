@@ -71,7 +71,15 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
     };
     let prompts = Arc::new(PromptTracker { inner: opts.notifier.clone(), prompts: Mutex::new(BTreeMap::new()) });
     let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), prompts.clone());
+    // `Reload` (a project added or removed) restarts the workers, not the process: the
+    // unlocked key stays in memory
+    while serve_projects(home, &identity, &ctx, &listener, &opts, &prompts)? {}
+    remove_socket(home)
+}
 
+/// Runs the projects of the current `LocalConfig` until `Shutdown` (`false`) or `Reload` (`true`).
+fn serve_projects(home: &Path, identity: &Identity, ctx: &DeviceCtx, listener: &interprocess::local_socket::Listener, opts: &DaemonOpts, prompts: &PromptTracker) -> Result<bool> {
+    let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
     let mut projects: BTreeMap<Uuid, ProjectHandle> = BTreeMap::new();
     let mut roots: BTreeMap<PathBuf, Uuid> = BTreeMap::new();
     for (id, lp) in &local.projects {
@@ -123,7 +131,14 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
         std::thread::spawn(move || event_loop(&url, &token, &head, &senders, &stop))
     };
 
-    ipc::serve(&listener, &mut |req| dispatch(&identity, &projects, &prompts, req));
+    let mut reload = false;
+    ipc::serve_until(listener, &mut |req| match req {
+        Request::Reload => {
+            reload = true;
+            (Response::Ok, true)
+        }
+        req => (dispatch(identity, &projects, prompts, req), false),
+    });
 
     stop.store(true, Ordering::SeqCst);
     drop(watcher);
@@ -137,7 +152,7 @@ pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
         let _ = p.thread.join();
     }
     let _ = fs_thread.join();
-    remove_socket(home)
+    Ok(reload)
 }
 
 fn remove_socket(home: &Path) -> Result<()> {
