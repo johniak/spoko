@@ -7,3 +7,23 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+bincode = "1"
+crossbeam-channel = "0.5.17"
+fastcdc = "5.0.0"
+git2 = { version = "0.21", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+spoko-core = { version = "0.1.0", path = "../spoko-core" }
+spoko-crypto = { version = "0.1.0", path = "../spoko-crypto" }
+spoko-proto = { version = "0.1.0", path = "../spoko-proto" }
+thiserror = "2.0.21"
+uuid = { version = "1.29.0", features = ["v4", "serde"] }
+zstd = "0.14.3"
+
+[dev-dependencies]
+rand = "0.8"
+tempfile = "3.27.0"
+spoko-client = { path = ".", features = ["test-util"] }
+
+[features]
+test-util = []
