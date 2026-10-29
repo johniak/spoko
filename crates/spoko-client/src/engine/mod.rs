@@ -203,7 +203,7 @@ impl Engine {
         }
     }
 
-    fn save(&mut self) -> Result<()> {
+    pub(crate) fn save(&mut self) -> Result<()> {
         self.state.save(&self.dir.join("state.json"))?;
         self.statcache.save(&self.dir.join("statcache.bin"))?;
         for (name, c) in &mut self.ext_caches {

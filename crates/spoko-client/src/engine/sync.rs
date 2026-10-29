@@ -314,6 +314,10 @@ impl Engine {
 
         let mut conflicts =
             carry_conflicts(&l.meta.conflicts, &r.meta.conflicts, &self.state.resolved);
+        // a conflict both had at the base that one side dropped was resolved there
+        if let Some(b) = &b {
+            conflicts.retain(|c| !b.meta.conflicts.contains(c) || (l.meta.conflicts.contains(c) && r.meta.conflicts.contains(c)));
+        }
         for c in &new_conflicts {
             conflicts.retain(|x| x.path != c.path);
             conflicts.push(c.clone());
