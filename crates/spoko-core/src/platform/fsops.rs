@@ -106,7 +106,8 @@ pub fn atomic_write(path: &Path, reader: &mut dyn Read, exec: bool) -> io::Resul
 /// every earlier write durable too. For state files that record what was applied.
 pub fn atomic_write_barrier(path: &Path, bytes: &[u8]) -> io::Result<()> {
     atomic_write(path, &mut &bytes[..], false)?;
-    fs::File::open(path)?.sync_all()
+    // write access: Windows' FlushFileBuffers refuses a read-only handle
+    fs::OpenOptions::new().write(true).open(path)?.sync_all()
 }
 
 /// [`atomic_write`] where the content is produced by `fill`.
