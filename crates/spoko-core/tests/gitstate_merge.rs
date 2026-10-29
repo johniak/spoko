@@ -109,3 +109,29 @@ fn slug() {
     assert_eq!(device_slug("--x--"), "x");
     assert_eq!(device_slug("ŁÓŹ"), "device");
 }
+
+#[test]
+fn scalar_fields_are_three_way_not_newer_wins() {
+    let e = |n| Entry { oid: oid(n), mode: EntryMode::Blob };
+    let mut base = gs(&[("refs/heads/main", 1), ("refs/heads/dzban", 1)]);
+    base.files.insert("config".into(), e(10));
+    base.files.insert("hooks/pre-commit".into(), e(11));
+    // ours (newer) changed only the index and deleted a hook
+    let mut ours = base.clone();
+    ours.index_tree = Some(oid(101));
+    ours.files.remove("hooks/pre-commit");
+    // theirs (older) switched branch and changed config
+    let mut theirs = base.clone();
+    theirs.head = Head::Branch("refs/heads/dzban".into());
+    theirs.files.insert("config".into(), e(12));
+    let r = merge_gitstate(Some(&base), &ours, &theirs, true, "b");
+    assert_eq!(r.state.head, Head::Branch("refs/heads/dzban".into()), "only theirs moved HEAD");
+    assert_eq!(r.state.index_tree, Some(oid(101)), "only ours moved the index");
+    assert_eq!(r.state.files.get("config"), Some(&e(12)));
+    assert_eq!(r.state.files.get("hooks/pre-commit"), None, "deletion on one side wins over unchanged");
+    // both changed HEAD → newer wins
+    let mut ours2 = base.clone();
+    ours2.head = Head::Detached(oid(1));
+    assert_eq!(merge_gitstate(Some(&base), &ours2, &theirs, true, "b").state.head, Head::Detached(oid(1)));
+    assert_eq!(merge_gitstate(Some(&base), &ours2, &theirs, false, "b").state.head, theirs.head);
+}

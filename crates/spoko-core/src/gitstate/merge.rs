@@ -70,11 +70,35 @@ pub fn merge_gitstate(base: Option<&GitState>, ours: &GitState, theirs: &GitStat
         }
     }
 
-    let mut files = older.files.clone();
-    files.extend(newer.files.iter().map(|(k, v)| (k.clone(), *v)));
+    let mut files = BTreeMap::new();
+    let base_files = base.map(|b| &b.files);
+    let file_names: BTreeSet<&String> = base_files.into_iter().flat_map(|f| f.keys()).chain(ours.files.keys()).chain(theirs.files.keys()).collect();
+    for name in file_names {
+        if let Some(e) = pick3(base_files.map(|f| f.get(name)), &ours.files.get(name), &theirs.files.get(name), ours_newer) {
+            files.insert(name.clone(), *e);
+        }
+    }
 
     GitMergeResult {
-        state: GitState { head: newer.head.clone(), refs, index_tree: newer.index_tree, stash, files },
+        state: GitState {
+            head: pick3(base.map(|b| b.head.clone()), &ours.head, &theirs.head, ours_newer),
+            refs,
+            index_tree: pick3(base.map(|b| b.index_tree), &ours.index_tree, &theirs.index_tree, ours_newer),
+            stash,
+            files,
+        },
         notes,
+    }
+}
+
+/// Three-way pick of a scalar: the side that changed wins; both changed → the newer side.
+fn pick3<T: PartialEq + Clone>(base: Option<T>, ours: &T, theirs: &T, ours_newer: bool) -> T {
+    let (o, t) = (ours.clone(), theirs.clone());
+    match base {
+        _ if o == t => o,
+        Some(b) if b == o => t,
+        Some(b) if b == t => o,
+        _ if ours_newer => o,
+        _ => t,
     }
 }
