@@ -3,6 +3,7 @@
 mod apply;
 mod capture;
 pub mod config_merge;
+mod merge;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -11,6 +12,7 @@ use git2::Oid;
 use serde::{Deserialize, Serialize};
 
 pub use apply::{ApplyGitOutcome, apply};
+pub use merge::{GitMergeNote, GitMergeResult, device_slug, merge_gitstate};
 pub use capture::{CaptureStats, capture, capture_with_stats, copy_objects};
 
 use crate::platform::RelPath;
