@@ -197,7 +197,7 @@ pub fn listen(home: &Path) -> Result<interprocess::local_socket::Listener> {
     // a pipe name nobody can guess (pipes live in one global namespace); the home is the user's
     #[cfg(windows)]
     let listener = {
-        let n = format!("spoko-{:032x}", rand::random::<u128>());
+        let n = format!("spoko-{}", Uuid::new_v4().simple());
         let l = ListenerOptions::new().name(pipe_name(&n)?).create_sync()?;
         std::fs::write(socket_path(home), &n)?;
         l
