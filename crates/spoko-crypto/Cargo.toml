@@ -14,7 +14,8 @@ data-encoding = "2.11.1"
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0.229", features = ["derive"] }
 rsa = { version = "0.9", features = ["sha2"] }
-ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "p256", "encryption", "std", "alloc"] }
+ssh-key = { version = "0.6", features = ["ed25519", "rsa", "ecdsa", "p256", "p384", "p521", "encryption", "std", "alloc"] }
+ssh-encoding = "0.2"
 thiserror = "2.0.21"
 zeroize = "1.9.1"
 

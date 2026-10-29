@@ -24,6 +24,10 @@ enum Cmd {
         data: PathBuf,
         #[arg(long, default_value = "0.0.0.0:7420")]
         listen: String,
+        /// The URL clients log in with (e.g. https://spoko.example.com). Login signatures are
+        /// bound to it; without it the request's Host header is trusted.
+        #[arg(long)]
+        public_url: Option<String>,
     },
     /// Manage accounts.
     Account {
@@ -60,7 +64,7 @@ fn open_db(data: &Path) -> Result<Db, Box<dyn std::error::Error>> {
 
 pub fn run_cli(args: impl IntoIterator<Item = String>, out: &mut dyn Write) -> CliResult {
     match Cli::try_parse_from(args)?.cmd {
-        Cmd::Serve { data, listen } => serve(&data, &listen, async {
+        Cmd::Serve { data, listen, public_url } => serve(&data, &listen, public_url, async {
             let _ = tokio::signal::ctrl_c().await;
         }),
         Cmd::Account { cmd: AccountCmd::Create { name, ssh_key, data } } => {
@@ -87,13 +91,19 @@ pub fn run_cli(args: impl IntoIterator<Item = String>, out: &mut dyn Write) -> C
 /// A key line, or a path to a `.pub` file.
 fn public_key(arg: &str) -> Result<(String, String), Box<dyn std::error::Error>> {
     let line = if Path::new(arg).is_file() { std::fs::read_to_string(arg)? } else { arg.to_owned() };
-    spoko_crypto::parse_public_key(&line).map_err(|_| format!("not an SSH public key: {}", line.trim()).into())
+    spoko_crypto::parse_public_key(&line).map_err(|e| match e {
+        spoko_crypto::CryptoError::UnsupportedKey => {
+            let alg = line.split_whitespace().next().unwrap_or_default();
+            format!("spoko cannot log in with {alg} keys; use an Ed25519, ECDSA or RSA key kept in a file (not DSA, not a hardware sk-* key)").into()
+        }
+        _ => format!("not an SSH public key: {}", line.trim()).into(),
+    })
 }
 
 /// Runs the server until `shutdown` resolves.
-pub fn serve(data: &Path, listen: &str, shutdown: impl Future<Output = ()> + Send + 'static) -> CliResult {
+pub fn serve(data: &Path, listen: &str, public_url: Option<String>, shutdown: impl Future<Output = ()> + Send + 'static) -> CliResult {
     let addr: SocketAddr = listen.parse()?;
-    let state = Arc::new(AppState { db: open_db(data)?, blobs: BlobStore::open(&data.join("blobs"))?, hub: Hub::default() });
+    let state = Arc::new(AppState { db: open_db(data)?, blobs: BlobStore::open(&data.join("blobs"))?, hub: Hub::default(), public_url });
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async move {
         let listener = tokio::net::TcpListener::bind(addr).await?;

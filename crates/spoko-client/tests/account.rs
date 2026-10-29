@@ -116,11 +116,20 @@ fn recovery_after_admin_set_key_reads_old_data() {
     let err = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "mac", None, None).unwrap_err().to_string();
     assert!(err.contains("--recovery-key"), "{err}");
     assert!(account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "mac", Some(&RecoveryKey::generate()), None).is_err(), "wrong recovery key");
-    let (b, none) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "mac", Some(&rk), None).unwrap();
-    assert_eq!((b.keyring, none), (a.keyring.clone(), None));
+    let old_data = spoko_crypto::seal(&a.keyring, b"x", b"before");
+    let (b, new_rk) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "mac", Some(&rk), None).unwrap();
+    // whoever has the lost key also has the old keyring: new data gets a new key version
+    assert_eq!(b.keyring.current().0, a.keyring.current().0 + 1);
+    assert_eq!(spoko_crypto::open(&b.keyring, b"x", &old_data).unwrap(), b"before", "old data stays readable");
+    assert!(spoko_crypto::open(&a.keyring, b"x", &spoko_crypto::seal(&b.keyring, b"x", b"after")).is_err());
+    // and a new recovery key replaces the old one on the server
+    let new_rk = new_rk.expect("a new recovery key");
+    let stored = srv.state.db.account_keyring(acc).unwrap().unwrap().recovery_wrapped.unwrap();
+    assert_eq!(Keyring::from_bytes(&new_rk.unwrap(&stored).unwrap()).unwrap(), b.keyring);
+    assert!(rk.unwrap(&stored).is_err(), "the old recovery key opens nothing any more");
     // from now on the new key alone is enough, the old one no longer logs in
-    let (c, _) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "linux", None, None).unwrap();
-    assert_eq!(c.keyring, a.keyring);
+    let (c, none) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &new_key, "linux", None, None).unwrap();
+    assert_eq!((&c.keyring, none.is_none()), (&b.keyring, true));
     let old = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("id_ed25519"), "old", None, None);
     assert!(matches!(old, Err(spoko_client::ClientError::Unauthorized)), "{old:?}");
 }
@@ -132,6 +141,28 @@ fn replaced_key_without_a_recovery_copy_is_an_error() {
     srv.state.db.execute_raw("UPDATE accounts SET recovery_wrapped = NULL, wrapped_for = 'SHA256:old'").unwrap();
     let err = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("id_ed25519"), "x", Some(&RecoveryKey::generate()), None).unwrap_err();
     assert!(err.to_string().contains("no recovery key"), "{err}");
+}
+
+#[test]
+fn simultaneous_recoveries_share_one_keyring() {
+    let srv = spawn_test_server();
+    let (_, rk) = login(&srv, "mac");
+    let other = test_util::key("other_ed25519");
+    let acc = srv.state.db.account_by_key(&test_util::key("id_ed25519").public_openssh()).unwrap().unwrap();
+    srv.state.db.set_account_key(acc, &other.public_openssh(), &other.fingerprint()).unwrap();
+    // another machine finishes its recovery between this login and this machine's store
+    let theirs = Keyring::generate();
+    let hex: String = other.wrap_keyring(&theirs).iter().map(|b| format!("{b:02x}")).collect();
+    srv.state
+        .db
+        .execute_raw(&format!(
+            "CREATE TRIGGER other_machine AFTER UPDATE OF last_seen ON devices BEGIN
+               UPDATE accounts SET ssh_wrapped = x'{hex}', wrapped_for = ssh_fingerprint WHERE wrapped_for != ssh_fingerprint;
+             END;"
+        ))
+        .unwrap();
+    let (id, new_rk) = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("other_ed25519"), "x", rk.as_ref(), None).unwrap();
+    assert_eq!((id.keyring, new_rk.is_none()), (theirs, true), "theirs won; its recovery key is the one shown there");
 }
 
 #[test]
@@ -248,7 +279,7 @@ fn key_rotate_old_key_rejected_other_devices_relogin() {
     let (mut a, old_rk) = login_in(&srv, home_a.path(), "id_ed25519", "mac", None).unwrap();
     let (b, _) = login(&srv, "linux");
     let before = a.keyring.clone();
-    let new_rk = account::rotate_key(&mut a, home_a.path(), &test_util::key_path("id_ed25519_pass"), Some("sekret")).unwrap();
+    let new_rk = account::rotate_key(&mut a, home_a.path(), None, &test_util::key_path("id_ed25519_pass"), Some("sekret")).unwrap();
     assert_eq!(a.keyring.current().0, before.current().0 + 1, "new data gets a new key version");
     assert_eq!(a.fingerprint, SshKeyPass::load().fingerprint());
     assert_eq!(Identity::load(home_a.path(), Some("sekret")).unwrap().keyring, a.keyring, "saved");
@@ -258,13 +289,51 @@ fn key_rotate_old_key_rejected_other_devices_relogin() {
     assert_eq!(b2.keyring, a.keyring);
     let old = account::login(tempfile::tempdir().unwrap().path(), &srv.url, &test_util::key_path("id_ed25519"), "x", None, None);
     assert!(matches!(old, Err(spoko_client::ClientError::Unauthorized)));
-    // the new recovery key opens the new keyring; the old one only what it wrapped
+    // the server keeps only the new recovery copy: the old recovery key opens nothing any more
     let kr = srv.state.db.account_keyring(srv.state.db.account_by_key(&SshKeyPass::load().public_openssh()).unwrap().unwrap()).unwrap().unwrap();
     let rec = kr.recovery_wrapped.unwrap();
     assert_eq!(Keyring::from_bytes(&new_rk.unwrap(&rec).unwrap()).unwrap(), a.keyring);
     assert!(old_rk.unwrap().unwrap(&rec).is_err());
     // rotating to a key of another account fails and changes nothing
     srv.create_account("other", &test_util::key("other_ed25519"));
-    assert!(account::rotate_key(&mut a, home_a.path(), &test_util::key_path("other_ed25519"), None).is_err());
+    assert!(account::rotate_key(&mut a, home_a.path(), Some("sekret"), &test_util::key_path("other_ed25519"), None).is_err());
     assert_eq!(a.fingerprint, SshKeyPass::load().fingerprint());
+    // the current key has a passphrase now: rotating away from it needs it
+    let ecdsa = test_util::key_path("id_ecdsa");
+    assert!(matches!(account::rotate_key(&mut a, home_a.path(), None, &ecdsa, None), Err(spoko_client::ClientError::Crypto(spoko_crypto::CryptoError::Encrypted))));
+    account::rotate_key(&mut a, home_a.path(), Some("sekret"), &ecdsa, None).unwrap();
+    assert_eq!(a.fingerprint, test_util::key("id_ecdsa").fingerprint());
+}
+
+#[test]
+fn a_session_token_alone_cannot_rotate_the_key() {
+    use spoko_proto::{RotateKey, SignPurpose, signed_message};
+    let srv = spawn_test_server();
+    let home = tempfile::tempdir().unwrap();
+    let (a, _) = login_in(&srv, home.path(), "id_ed25519", "mac", None).unwrap();
+    // a thief with this device's token and its own key
+    let api = a.api();
+    let thief = test_util::key("id_ecdsa");
+    let sign = |k: &spoko_crypto::SshKey, p, nonce: &[u8]| k.sign(&signed_message(p, &srv.url, nonce)).unwrap();
+    let (oc, c) = (api.challenge(&test_util::key("id_ed25519").public_openssh()).unwrap(), api.challenge(&thief.public_openssh()).unwrap());
+    let mut req = RotateKey {
+        old_challenge_id: oc.challenge_id,
+        old_signature: String::new(),
+        challenge_id: c.challenge_id,
+        signature: sign(&thief, SignPurpose::RotateNew, &c.nonce),
+        ssh_wrapped: vec![1],
+        recovery_wrapped: vec![2],
+    };
+    assert!(matches!(api.rotate_key(&req), Err(spoko_client::ClientError::Unauthorized)), "without the old key's signature");
+    let (oc, c) = (api.challenge(&test_util::key("id_ed25519").public_openssh()).unwrap(), api.challenge(&thief.public_openssh()).unwrap());
+    (req.old_challenge_id, req.old_signature) = (oc.challenge_id, sign(&thief, SignPurpose::RotateOld, &oc.nonce));
+    (req.challenge_id, req.signature) = (c.challenge_id, sign(&thief, SignPurpose::RotateNew, &c.nonce));
+    assert!(matches!(api.rotate_key(&req), Err(spoko_client::ClientError::Unauthorized)), "old signature by the wrong key");
+    // the account, its keyring and this device are as before
+    let id = Identity::load(home.path(), None).unwrap();
+    assert_eq!((id.fingerprint, id.keyring), (a.fingerprint.clone(), a.keyring.clone()));
+    let kr = api.keyring().unwrap().unwrap();
+    assert_eq!(test_util::key("id_ed25519").unwrap_keyring(&kr.ssh_wrapped).unwrap(), a.keyring);
+    assert!(kr.recovery_wrapped.is_some_and(|r| r != vec![2]));
+    assert_eq!(api.devices().unwrap().len(), 1);
 }

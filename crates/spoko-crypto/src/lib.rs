@@ -34,6 +34,8 @@ pub enum CryptoError {
     Passphrase,
     #[error("unsupported SSH key type (use Ed25519, ECDSA or RSA)")]
     UnsupportedKey,
+    #[error("{} is a PEM/PKCS#8 key; convert it to the OpenSSH format with: ssh-keygen -p -f {}", .0.display(), .0.display())]
+    NotOpenSsh(std::path::PathBuf),
     #[error("bad signature")]
     Signature,
     #[error("cannot read the SSH key: {0}")]

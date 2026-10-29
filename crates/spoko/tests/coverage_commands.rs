@@ -564,6 +564,32 @@ fn unlock_prompts_and_unlocks_the_daemon() {
 }
 
 #[test]
+fn login_with_a_pem_key_says_how_to_convert_it() {
+    let srv = spawn_test_server();
+    let m = Machine::new();
+    let pem = spoko_crypto::test_util::key_path("id_rsa_pem");
+    let e = m.fail(&["login", &srv.url, "--key", pem.to_str().unwrap()], &m.top());
+    assert!(e.ends_with(&format!("convert it to the OpenSSH format with: ssh-keygen -p -f {}", pem.display())), "{e}");
+}
+
+#[test]
+fn recovery_login_prints_a_new_recovery_key() {
+    let srv = spawn_test_server();
+    let a = Machine::new();
+    let rk = recovery_key(&login(&srv, &a, "mac", None));
+    // the key was lost: the admin sets a new one, this machine has only that one
+    let new = spoko_crypto::test_util::key("other_ed25519");
+    let acc = srv.state.db.account_by_key(&spoko_crypto::test_util::key("id_ed25519").public_openssh()).unwrap().unwrap();
+    srv.state.db.set_account_key(acc, &new.public_openssh(), &new.fingerprint()).unwrap();
+    let b = Machine::new();
+    std::fs::copy(spoko_crypto::test_util::key_path("other_ed25519"), b.path("h/.ssh/id_ed25519")).unwrap();
+    let out = b.ok(&["login", &srv.url, "--name", "linux", "--recovery-key", &rk], &b.top());
+    let new_rk = out.lines().find_map(|l| l.strip_prefix("Nowy klucz odzyskiwania: ")).unwrap_or_else(|| panic!("{out}"));
+    assert_ne!(new_rk.trim(), rk);
+    assert!(out.contains("poprzedni klucz odzyskiwania już nie działa") && !out.lines().any(|l| l.starts_with("Klucz odzyskiwania: ")), "{out}");
+}
+
+#[test]
 fn key_rotate_moves_the_account_and_prints_a_new_recovery_key() {
     let srv = spawn_test_server();
     let (a, b) = pair_of_machines(&srv);
@@ -574,6 +600,7 @@ fn key_rotate_moves_the_account_and_prints_a_new_recovery_key() {
     let out = a.ok(&["key", "rotate", "--new", new.to_str().unwrap()], &a.top());
     let fp = spoko_crypto::SshKey::load(&new, Some("sekret")).unwrap().fingerprint();
     assert!(out.contains(&fp) && out.contains("Nowy klucz odzyskiwania: ") && out.contains("spoko login"), "{out}");
+    assert!(out.contains("poprzedni klucz odzyskiwania już nie działa") && !out.contains("sprzed zmiany"), "the server keeps only the new copy: {out}");
     // this machine keeps working with the new key, the other one has to log in again
     std::fs::write(p.join("b"), "b").unwrap();
     assert!(a.ok(&["sync"], &p).contains("wysłano"));
@@ -583,6 +610,10 @@ fn key_rotate_moves_the_account_and_prints_a_new_recovery_key() {
     b.ok(&["login", &srv.url, "--name", "linux"], &b.top());
     assert!(b.ok(&["device", "list"], &b.top()).contains("linux (ten)"));
     assert!(a.fail(&["key", "rotate", "--new", "/no/such/key"], &a.top()).starts_with("cannot read the SSH key: "));
+    // the current key has a passphrase now: it is asked for and signs the rotation
+    let ecdsa = spoko_crypto::test_util::key_path("id_ecdsa");
+    let out = a.ok(&["key", "rotate", "--new", ecdsa.to_str().unwrap()], &a.top());
+    assert!(out.contains(&spoko_crypto::test_util::key("id_ecdsa").fingerprint()), "{out}");
 }
 
 #[test]

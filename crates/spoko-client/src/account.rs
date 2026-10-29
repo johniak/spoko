@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use spoko_crypto::{Keyring, RecoveryKey, SshKey, read_private_file, write_private_file};
-use spoko_proto::{AccountKeyring, LoginRequest, RotateKey};
+use spoko_proto::{AccountKeyring, LoginRequest, RotateKey, SignPurpose, signed_message};
 use uuid::Uuid;
 
 use crate::api::ApiClient;
@@ -106,7 +106,8 @@ impl Identity {
 
 /// Logs this device in with the SSH key at `key_path`. The account's first device creates the
 /// keyring and returns a new recovery key to show the user. After the account's key was
-/// replaced (`spoko-server account set-key`), `recovery` opens the old keyring.
+/// replaced (`spoko-server account set-key`), `recovery` opens the old keyring, which gets a
+/// new key version and a new recovery key (returned; the old one stops working).
 pub fn login(
     home: &Path,
     server_url: &str,
@@ -122,7 +123,7 @@ pub fn login(
     let device_id = read_file(home).ok().filter(|f| f.server_url == server_url).map(|f| f.device_id);
     let resp = anon.login(&LoginRequest {
         challenge_id: challenge.challenge_id,
-        signature: key.sign(&challenge.nonce)?,
+        signature: key.sign(&signed_message(SignPurpose::Login, server_url, &challenge.nonce))?,
         device_name: device_name.to_owned(),
         device_id,
     })?;
@@ -162,24 +163,38 @@ fn account_keyring(api: &ApiClient, key: &SshKey, stored: Option<AccountKeyring>
         ClientError::Other("the account's SSH key was replaced; log in with --recovery-key to unlock the existing data".into())
     })?;
     let wrapped = stored.recovery_wrapped.ok_or_else(|| ClientError::Other("this account has no recovery key".into()))?;
-    let keyring = Keyring::from_bytes(&rk.unwrap(&wrapped)?)?;
-    api.store_keyring(&AccountKeyring { ssh_wrapped: key.wrap_keyring(&keyring), wrapped_for: String::new(), recovery_wrapped: None })?;
-    Ok((keyring, None))
+    let mut keyring = Keyring::from_bytes(&rk.unwrap(&wrapped)?)?;
+    // whoever has the lost key has this keyring too: new data gets a new version, and a new
+    // recovery key replaces the old one
+    keyring.rotate();
+    let new_rk = RecoveryKey::generate();
+    let fresh = AccountKeyring { ssh_wrapped: key.wrap_keyring(&keyring), wrapped_for: String::new(), recovery_wrapped: Some(new_rk.wrap(&keyring.to_bytes())) };
+    if api.store_keyring(&fresh)? {
+        return Ok((keyring, Some(new_rk)));
+    }
+    // another machine recovered at the same moment: use its keyring
+    let theirs = api.keyring()?.ok_or_else(|| ClientError::Server("keyring missing".into()))?;
+    Ok((key.unwrap_keyring(&theirs.ssh_wrapped)?, None))
 }
 
 /// Moves the account to the SSH key at `new_key`: new data gets a new key version, the old
 /// key stops working, every other machine is logged out (it logs in again with the new key).
-/// Returns the new recovery key; the old one opens only data from before the rotation.
-pub fn rotate_key(id: &mut Identity, home: &Path, new_key: &Path, passphrase: Option<&str>) -> Result<RecoveryKey> {
-    let key = SshKey::load(new_key, passphrase)?;
+/// Both keys sign (the current one approves, the new one proves it is held); `passphrase`
+/// opens the current key, `new_passphrase` the new one. Returns the new recovery key: the
+/// server keeps only that copy, so the old recovery key stops working.
+pub fn rotate_key(id: &mut Identity, home: &Path, passphrase: Option<&str>, new_key: &Path, new_passphrase: Option<&str>) -> Result<RecoveryKey> {
+    let old = SshKey::load(&id.key_path, passphrase)?;
+    let key = SshKey::load(new_key, new_passphrase)?;
     let api = id.api();
-    let challenge = api.challenge(&key.public_openssh())?;
+    let (old_challenge, challenge) = (api.challenge(&old.public_openssh())?, api.challenge(&key.public_openssh())?);
     let mut keyring = id.keyring.clone();
     keyring.rotate();
     let rk = RecoveryKey::generate();
     let req = RotateKey {
+        old_challenge_id: old_challenge.challenge_id,
+        old_signature: old.sign(&signed_message(SignPurpose::RotateOld, &id.server_url, &old_challenge.nonce))?,
         challenge_id: challenge.challenge_id,
-        signature: key.sign(&challenge.nonce)?,
+        signature: key.sign(&signed_message(SignPurpose::RotateNew, &id.server_url, &challenge.nonce))?,
         ssh_wrapped: key.wrap_keyring(&keyring),
         recovery_wrapped: rk.wrap(&keyring.to_bytes()),
     };

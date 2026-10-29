@@ -51,15 +51,20 @@ impl Ctx {
     }
 
     pub fn identity(&self) -> Res<Identity> {
+        Ok(self.identity_with_passphrase()?.0)
+    }
+
+    /// The identity and the SSH key's passphrase, when it has one and the user typed it.
+    pub fn identity_with_passphrase(&self) -> Res<(Identity, Option<String>)> {
         if !self.home.join(spoko_client::account::IDENTITY_FILE).exists() {
             return err("ten komputer nie jest zalogowany (spoko login <serwer>)");
         }
         match Identity::load(&self.home, None) {
             Err(ClientError::Crypto(CryptoError::Encrypted)) => {
                 let pass = self.ask_passphrase(&Identity::key_path(&self.home)?)?;
-                Ok(Identity::load(&self.home, Some(&pass))?)
+                Ok((Identity::load(&self.home, Some(&pass))?, Some(pass)))
             }
-            r => Ok(r?),
+            r => Ok((r?, None)),
         }
     }
 

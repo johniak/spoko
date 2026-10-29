@@ -21,7 +21,7 @@ fn same_key_same_master_across_comment_and_reencode() {
 
 #[test]
 fn different_keys_different_master() {
-    let masters: Vec<_> = ["id_ed25519", "other_ed25519", "id_ecdsa", "id_rsa"].iter().map(|k| load(k).master()).collect();
+    let masters: Vec<_> = ["id_ed25519", "other_ed25519", "id_ecdsa", "id_ecdsa384", "id_ecdsa521", "id_rsa"].iter().map(|k| load(k).master()).collect();
     for (i, m) in masters.iter().enumerate() {
         assert!(masters.iter().skip(i + 1).all(|o| o != m));
     }
@@ -38,7 +38,7 @@ fn fingerprint_matches_ssh_keygen_format() {
 
 #[test]
 fn sign_verify_roundtrip_each_type() {
-    for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+    for name in ["id_ed25519", "id_ecdsa", "id_ecdsa384", "id_ecdsa521", "id_rsa"] {
         let k = load(name);
         let sig = k.sign(b"challenge-123").unwrap_or_else(|e| panic!("{name} sign: {e}"));
         verify_signature(&k.public_openssh(), b"challenge-123", &sig).unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -101,7 +101,7 @@ fn signatures_verify_with_openssh() {
         return;
     }
     let dir = tempfile::tempdir().unwrap();
-    for name in ["id_ed25519", "id_ecdsa", "id_rsa"] {
+    for name in ["id_ed25519", "id_ecdsa", "id_ecdsa384", "id_ecdsa521", "id_rsa"] {
         let sig = dir.path().join(format!("{name}.sig"));
         std::fs::write(&sig, load(name).sign(b"hello spoko").unwrap()).unwrap();
         let mut child = std::process::Command::new("ssh-keygen")
@@ -139,4 +139,41 @@ fn hardware_keys_are_refused() {
     let path = dir.path().join("id_ed25519_sk");
     std::fs::write(&path, pem.as_bytes()).unwrap();
     assert!(matches!(SshKey::load(&path, None), Err(CryptoError::UnsupportedKey)));
+}
+
+#[test]
+fn ecdsa_keys_with_a_short_scalar_load() {
+    // OpenSSH stores this P-521 scalar in 65 bytes (it starts with a zero byte)
+    let plain = load("id_ecdsa521");
+    let k = SshKey::load(&key("id_ecdsa521_pass"), Some("sekret")).unwrap();
+    assert_eq!((k.master(), k.fingerprint()), (plain.master(), plain.fingerprint()), "the passphrase is not key material");
+    verify_signature(&plain.public_openssh(), b"m", &k.sign(b"m").unwrap()).unwrap();
+    assert!(matches!(SshKey::load(&key("id_ecdsa521_pass"), Some("wrong")), Err(CryptoError::Passphrase)));
+    assert!(matches!(SshKey::load(&key("id_ecdsa521_pass"), None), Err(CryptoError::Encrypted)));
+}
+
+#[test]
+fn pem_and_pkcs8_keys_ask_for_a_conversion() {
+    // `ssh-keygen -m PEM` (the old default for RSA) and `-m PKCS8`
+    for name in ["id_rsa_pem", "id_ecdsa_pkcs8"] {
+        let path = key(name);
+        let e = SshKey::load(&path, None).err().unwrap();
+        let p = path.display();
+        assert_eq!(e.to_string(), format!("{p} is a PEM/PKCS#8 key; convert it to the OpenSSH format with: ssh-keygen -p -f {p}"), "{name}");
+        assert!(matches!(SshKey::is_encrypted_file(&path), Err(CryptoError::NotOpenSsh(_))), "{name}");
+    }
+}
+
+#[test]
+fn public_keys_spoko_cannot_log_in_with_are_refused() {
+    for line in [
+        "ssh-dss AAAAB3NzaC1kc3MAAAABBQAAAAEFAAAAAQUAAAABBQ== old",
+        "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAAAABHNzaDo= yubikey",
+    ] {
+        assert!(matches!(spoko_crypto::parse_public_key(line), Err(CryptoError::UnsupportedKey)), "{line}");
+    }
+    for name in ["id_ed25519", "id_ecdsa", "id_ecdsa384", "id_ecdsa521", "id_rsa"] {
+        let line = std::fs::read_to_string(key(&format!("{name}.pub"))).unwrap();
+        assert_eq!(spoko_crypto::parse_public_key(&line).unwrap().0, load(name).public_openssh());
+    }
 }

@@ -4,10 +4,12 @@ mod api;
 mod events;
 mod framing;
 pub mod serde_bytes;
+mod signing;
 
 pub use api::*;
 pub use events::ServerEvent;
 pub use framing::{FramingError, decode_batch, encode_batch};
+pub use signing::{SignPurpose, authority, signed_message};
 
 pub const MAX_OBJECT_SIZE: usize = 8 * 1024 * 1024;
 pub const MAX_BATCH_BYTES: usize = 32 * 1024 * 1024;

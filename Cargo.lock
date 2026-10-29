@@ -3737,6 +3737,7 @@ dependencies = [
  "rsa",
  "serde",
  "serde_json",
+ "ssh-encoding",
  "ssh-key",
  "tempfile",
  "thiserror 2.0.21",

@@ -3,8 +3,10 @@
 **Threat model.** The server, its operator, its storage and the network are untrusted. Your
 own unlocked devices are trusted: someone who has your laptop has your source code anyway.
 
-**One SSH key per account.** The account *is* an SSH public key (Ed25519, ECDSA or RSA, in
-OpenSSH format). The same private key is on every machine of the user; spoko reads it from
+**One SSH key per account.** The account *is* an SSH public key (Ed25519, ECDSA P-256/P-384/
+P-521 or RSA, in OpenSSH format; an old PEM/PKCS#8 file is converted with
+`ssh-keygen -p -f <key>`; DSA and hardware `sk-*` keys cannot be used). The same private key
+is on every machine of the user; spoko reads it from
 `~/.ssh/id_ed25519`, `id_ecdsa` or `id_rsa` (the first that exists) or from `--key`.
 ssh-agent is not used: spoko needs the key's secret part to derive the wrapping key, which an
 agent never gives out.
@@ -14,8 +16,13 @@ versions, the account's SSH public key, device names, and when devices are onlin
 sees file names, contents, branch names, commit messages or the data key.
 
 **Logging in.** The server issues a random 32-byte challenge, single-use, valid for 120 s and
-bound to the public key it was issued for. The client signs it (sshsig, namespace `spoko`, so
-the signature is worthless to git or ssh) and gets a session token for this device. Unknown
+bound to the public key it was issued for. The client signs
+`spoko-login v1\n<server>\n<hex challenge>` (sshsig, namespace `spoko`, so the signature is
+worthless to git or ssh) and gets a session token for this device. `<server>` is the host
+(and port) of the server URL the client uses, so a hostile server the user also logs into
+cannot pass on another server's challenge: the server compares it with its `--public-url`, or
+without one with the request's `Host` header (a relay sets that itself, so it helps only behind
+a proxy that routes by host — set `--public-url`). Unknown
 keys get a challenge too and fail only at login, so the endpoint does not reveal which keys
 have accounts.
 
@@ -31,8 +38,9 @@ have accounts.
   the ECDSA scalar or the RSA private exponent. The comment and the file's encoding do not
   change it. Using the signing key as KDF input as well is a deliberate choice: one key pair
   does everything.
-- Recovery key: 256-bit, shown once (first login of the account) as base32 groups; it wraps
-  the same keyring, stored on the server. It only decrypts — it cannot log in.
+- Recovery key: 256-bit, shown once as base32 groups (first login of the account; a recovery
+  or a key rotation replaces it with a new one, shown then); it wraps the same keyring, stored
+  on the server. It only decrypts — it cannot log in.
 - At rest on a device: `$SPOKO_HOME/identity.bin` (0600, ACL on Windows) holds the device id,
   server, session token, key path and fingerprint and the *SSH-wrapped* keyring — nothing that
   opens data without the SSH key.
@@ -48,14 +56,18 @@ substituted blob fails decryption or the hash check and the sync stops.
 
 **Lost key.** The server admin sets the account's new public key
 (`spoko-server account set-key`, which also ends every session); then
-`spoko login --key <new> --recovery-key …` opens the old keyring with the recovery key and
-wraps it for the new SSH key. The server accepts a new wrapped keyring only while the stored
-one is not for the account's current key, so a stolen session token cannot replace it.
+`spoko login --key <new> --recovery-key …` opens the old keyring with the recovery key, adds
+a new data-key version (whoever has the lost key reads only the data from before), wraps it
+for the new SSH key and prints a new recovery key (the old one stops working). The server
+accepts a new wrapped keyring only while the stored one is not for the account's current key,
+so a stolen session token cannot replace it.
 
-**Leaked key.** `spoko key rotate --new <file>` proves possession of the new key (it signs a
-challenge issued for it), moves the account to it, adds a new data-key version, prints a new
-recovery key (the old one opens only data from before) and ends every other session; the
-other machines log in again with the new key. The old key cannot log in any more.
+**Leaked key.** `spoko key rotate --new <file>` signs two challenges: one with the current key
+(`spoko-rotate-old v1…` — a session token alone cannot move the account) and one with the new
+key (`spoko-rotate-new v1…`, proof of holding it). It moves the account to the new key, adds a
+new data-key version, prints a new recovery key (the server keeps only that one, so the old
+recovery key stops working) and ends every other session; the other machines log in again with
+the new key. The old key cannot log in any more.
 
 **Removing a device.** `spoko device remove <name>` ends that machine's session. It is not a
 security boundary: a machine that has the SSH key can log in again. To cut a machine off for

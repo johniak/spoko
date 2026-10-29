@@ -82,3 +82,29 @@ fn optional_bytes_roundtrip() {
     let missing: AccountKeyring = serde_json::from_str(r#"{"ssh_wrapped":"Aw=="}"#).unwrap();
     assert_eq!((missing.recovery_wrapped, missing.wrapped_for), (None, String::new()));
 }
+
+#[test]
+fn authority_of_urls_and_host_headers() {
+    for (input, want) in [
+        ("https://Spoko.Example.com", "spoko.example.com"),
+        ("https://spoko.example.com:443/", "spoko.example.com"),
+        ("http://spoko.example.com:80/v1/x?y#z", "spoko.example.com"),
+        ("http://127.0.0.1:7420", "127.0.0.1:7420"),
+        ("http://user@[::1]:8080/", "[::1]:8080"),
+        ("127.0.0.1:7420", "127.0.0.1:7420"),
+        ("host:8080", "host:8080"),
+        (" Example.COM ", "example.com"),
+    ] {
+        assert_eq!(authority(input), want, "{input}");
+    }
+}
+
+#[test]
+fn signed_message_binds_purpose_server_and_nonce() {
+    let m = signed_message(SignPurpose::Login, "https://Spoko.example.com/", &[0xab, 0x01]);
+    assert_eq!(m, b"spoko-login v1\nspoko.example.com\nab01");
+    assert_eq!(signed_message(SignPurpose::Login, "spoko.example.com", &[0xab, 0x01]), m, "URL and Host header agree");
+    assert_eq!(signed_message(SignPurpose::RotateOld, "h", &[1]), b"spoko-rotate-old v1\nh\n01");
+    assert_eq!(signed_message(SignPurpose::RotateNew, "h", &[1]), b"spoko-rotate-new v1\nh\n01");
+    assert_ne!(signed_message(SignPurpose::Login, "a", &[1]), signed_message(SignPurpose::Login, "b", &[1]));
+}

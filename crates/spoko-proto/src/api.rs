@@ -50,10 +50,15 @@ pub struct AccountKeyring {
     pub recovery_wrapped: Option<Vec<u8>>,
 }
 
-/// Moves the account to a new SSH key: `signature` answers a challenge issued for the new key
-/// (proof of holding it); the keyring comes re-wrapped for it, with a new recovery copy.
+/// Moves the account to a new SSH key: `old_signature` answers a challenge issued for the
+/// account's current key (its owner approves), `signature` one issued for the new key (proof of
+/// holding it); the keyring comes re-wrapped for it, with a new recovery copy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RotateKey {
+    #[serde(default)]
+    pub old_challenge_id: Uuid,
+    #[serde(default)]
+    pub old_signature: String,
     pub challenge_id: Uuid,
     pub signature: String,
     #[serde(with = "serde_bytes")]

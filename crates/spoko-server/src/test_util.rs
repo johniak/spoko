@@ -63,7 +63,7 @@ impl TestServer {
 
 impl StoppedServer {
     pub fn restart(self) -> TestServer {
-        spawn_in(self.dir, Some(self.addr))
+        spawn_in(self.dir, Some(self.addr), None)
     }
 }
 
@@ -73,14 +73,20 @@ pub fn spawn_test_server() -> TestServer {
 
 /// Like [`spawn_test_server`] but optionally on a fixed address (to restart a server in place).
 pub fn spawn_on(addr: Option<SocketAddr>) -> TestServer {
-    spawn_in(tempfile::tempdir().unwrap(), addr)
+    spawn_in(tempfile::tempdir().unwrap(), addr, None)
 }
 
-fn spawn_in(dir: tempfile::TempDir, addr: Option<SocketAddr>) -> TestServer {
+/// A server started with `--public-url url`.
+pub fn spawn_with_public_url(url: &str) -> TestServer {
+    spawn_in(tempfile::tempdir().unwrap(), None, Some(url.to_owned()))
+}
+
+fn spawn_in(dir: tempfile::TempDir, addr: Option<SocketAddr>, public_url: Option<String>) -> TestServer {
     let state: Shared = Arc::new(AppState {
         db: crate::db::Db::open(&dir.path().join("spoko.db")).unwrap(),
         blobs: crate::blobstore::BlobStore::open(&dir.path().join("blobs")).unwrap(),
         hub: crate::hub::Hub::default(),
+        public_url,
     });
     let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
     // the old listener may linger briefly after a stop

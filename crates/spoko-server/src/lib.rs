@@ -21,6 +21,8 @@ pub struct AppState {
     pub db: db::Db,
     pub blobs: blobstore::BlobStore,
     pub hub: hub::Hub,
+    /// The URL clients use (`serve --public-url`); without it the `Host` header is trusted.
+    pub public_url: Option<String>,
 }
 
 pub type Shared = Arc<AppState>;

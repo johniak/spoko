@@ -63,10 +63,15 @@ fn login(srv: &TestServer, key: &str, device: &str) -> LoginResponse {
     let (s, v) = anon.json("POST", "/auth/challenge", json!({"public_key": k.public_openssh()}));
     assert_eq!(s, 200, "{v}");
     let c: Challenge = serde_json::from_value(v).unwrap();
-    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), device_name: device.into(), device_id: None };
+    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&msg(srv, &c)).unwrap(), device_name: device.into(), device_id: None };
     let (s, v) = anon.json("POST", "/auth/login", serde_json::to_value(req).unwrap());
     assert_eq!(s, 200, "{v}");
     serde_json::from_value(v).unwrap()
+}
+
+/// What a client of `srv` signs to log in with challenge `c`.
+fn msg(srv: &TestServer, c: &Challenge) -> Vec<u8> {
+    signed_message(SignPurpose::Login, &srv.url, &c.nonce)
 }
 
 fn challenge(srv: &TestServer, key: &str) -> Challenge {
@@ -93,7 +98,7 @@ fn login_with_signed_challenge() {
     assert_eq!(Http::new(&srv, None).get("/devices").0, 401);
     assert_eq!(Http::new(&srv, Some("bogus")).get("/devices").0, 401);
     // every key type works
-    for key in ["id_ecdsa", "id_rsa"] {
+    for key in ["id_ecdsa", "id_ecdsa384", "id_ecdsa521", "id_rsa"] {
         assert!(!login(&srv, key, "linux").token.is_empty());
     }
 }
@@ -108,7 +113,7 @@ fn second_login_same_key_same_account_new_device() {
     // logging in again as a known device keeps its id and replaces its token
     let k = test_util::key("id_ed25519");
     let c = challenge(&srv, "id_ed25519");
-    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), device_name: "mac2".into(), device_id: Some(a.device_id) };
+    let req = LoginRequest { challenge_id: c.challenge_id, signature: k.sign(&msg(&srv, &c)).unwrap(), device_name: "mac2".into(), device_id: Some(a.device_id) };
     let again: LoginResponse = serde_json::from_value(Http::new(&srv, None).json("POST", "/auth/login", serde_json::to_value(req).unwrap()).1).unwrap();
     assert_eq!(again.device_id, a.device_id);
     assert_eq!(Http::new(&srv, Some(&a.token)).get("/devices").0, 401, "old token replaced");
@@ -121,12 +126,12 @@ fn challenge_single_use_and_bound_to_key() {
     login(&srv, "id_ed25519", "mac");
     let k = test_util::key("id_ed25519");
     let c = challenge(&srv, "id_ed25519");
-    let sig = k.sign(&c.nonce).unwrap();
+    let sig = k.sign(&msg(&srv, &c)).unwrap();
     assert_eq!(try_login(&srv, &c, sig.clone()), 200);
     assert_eq!(try_login(&srv, &c, sig), 401, "used up");
     // a challenge issued for another key cannot be answered with this one
     let other = challenge(&srv, "other_ed25519");
-    assert_eq!(try_login(&srv, &other, k.sign(&other.nonce).unwrap()), 401);
+    assert_eq!(try_login(&srv, &other, k.sign(&msg(&srv, &other)).unwrap()), 401);
     // nor with a signature of something else
     let c = challenge(&srv, "id_ed25519");
     assert_eq!(try_login(&srv, &c, k.sign(b"other").unwrap()), 401);
@@ -135,11 +140,39 @@ fn challenge_single_use_and_bound_to_key() {
 }
 
 #[test]
+fn login_signature_is_bound_to_this_server_and_to_login() {
+    let srv = spawn_test_server();
+    login(&srv, "id_ed25519", "mac");
+    let k = test_util::key("id_ed25519");
+    // a hostile server relays our challenge: the client signs for the host it talks to
+    let port = srv.addr.port();
+    for (purpose, host) in [(SignPurpose::Login, format!("evil.example:{port}")), (SignPurpose::Login, "127.0.0.1".into()), (SignPurpose::RotateNew, srv.url.clone()), (SignPurpose::RotateOld, srv.url.clone())] {
+        let c = challenge(&srv, "id_ed25519");
+        assert_eq!(try_login(&srv, &c, k.sign(&signed_message(purpose, &host, &c.nonce)).unwrap()), 401, "{purpose:?} {host}");
+    }
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(&c.nonce).unwrap()), 401, "the bare nonce");
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(&signed_message(SignPurpose::Login, &srv.url.to_uppercase(), &c.nonce)).unwrap()), 200);
+}
+
+#[test]
+fn a_configured_public_url_wins_over_the_host_header() {
+    let srv = spoko_server::test_util::spawn_with_public_url("https://Spoko.Example.com/");
+    let k = test_util::key("id_ed25519");
+    srv.create_account("jan", &k);
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(&msg(&srv, &c)).unwrap()), 401, "signed for the Host header the relay can set");
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, k.sign(&signed_message(SignPurpose::Login, "https://spoko.example.com", &c.nonce)).unwrap()), 200);
+}
+
+#[test]
 fn unknown_key_gets_a_challenge_but_no_login() {
     let srv = spawn_test_server();
     let k = test_util::key("other_ed25519");
     let c = challenge(&srv, "other_ed25519");
-    assert_eq!(try_login(&srv, &c, k.sign(&c.nonce).unwrap()), 401);
+    assert_eq!(try_login(&srv, &c, k.sign(&msg(&srv, &c)).unwrap()), 401);
     assert_eq!(Http::new(&srv, None).json("POST", "/auth/challenge", json!({"public_key": "ssh-ed25519 nope"})).0, 400);
 }
 
@@ -273,11 +306,29 @@ fn pointer_cas_409_returns_current() {
     assert_eq!(h.json("PUT", &path, json!({"bad":1})).0, 422);
 }
 
-fn rotate(srv: &TestServer, token: &str, new_key: &str) -> u16 {
-    let k = test_util::key(new_key);
-    let c = challenge(srv, new_key);
-    let req = RotateKey { challenge_id: c.challenge_id, signature: k.sign(&c.nonce).unwrap(), ssh_wrapped: vec![5], recovery_wrapped: vec![6] };
+fn sign_for(srv: &TestServer, key: &str, purpose: SignPurpose, c: &Challenge) -> String {
+    test_util::key(key).sign(&signed_message(purpose, &srv.url, &c.nonce)).unwrap()
+}
+
+/// A rotation from `old_key` to `new_key`, each signing a challenge issued for it.
+fn rotate_req(srv: &TestServer, old_key: &str, new_key: &str) -> RotateKey {
+    let (oc, c) = (challenge(srv, old_key), challenge(srv, new_key));
+    RotateKey {
+        old_challenge_id: oc.challenge_id,
+        old_signature: sign_for(srv, old_key, SignPurpose::RotateOld, &oc),
+        challenge_id: c.challenge_id,
+        signature: sign_for(srv, new_key, SignPurpose::RotateNew, &c),
+        ssh_wrapped: vec![5],
+        recovery_wrapped: vec![6],
+    }
+}
+
+fn post_rotate(srv: &TestServer, token: &str, req: &RotateKey) -> u16 {
     Http::new(srv, Some(token)).json("POST", "/account/key", serde_json::to_value(req).unwrap()).0
+}
+
+fn rotate(srv: &TestServer, token: &str, new_key: &str) -> u16 {
+    post_rotate(srv, token, &rotate_req(srv, "id_ed25519", new_key))
 }
 
 #[test]
@@ -292,9 +343,9 @@ fn key_rotate_moves_the_account_to_the_new_key() {
     assert_eq!((kr.ssh_wrapped, kr.recovery_wrapped, kr.wrapped_for), (vec![5], Some(vec![6]), new.fingerprint()));
     assert_eq!(Http::new(&srv, Some(&b.token)).get("/devices").0, 401, "other machines log in again");
     let old = challenge(&srv, "id_ed25519");
-    assert_eq!(try_login(&srv, &old, test_util::key("id_ed25519").sign(&old.nonce).unwrap()), 401, "old key is out");
+    assert_eq!(try_login(&srv, &old, test_util::key("id_ed25519").sign(&msg(&srv, &old)).unwrap()), 401, "old key is out");
     let c = challenge(&srv, "id_ecdsa");
-    assert_eq!(try_login(&srv, &c, new.sign(&c.nonce).unwrap()), 200);
+    assert_eq!(try_login(&srv, &c, new.sign(&msg(&srv, &c)).unwrap()), 200);
 }
 
 #[test]
@@ -305,9 +356,67 @@ fn key_rotate_needs_the_new_key_and_a_free_one() {
     assert_eq!(rotate(&srv, &a.token, "other_ed25519"), 409, "key owned by another account");
     assert_eq!(rotate(&srv, &a.token, "id_ed25519"), 400, "the same key");
     // a signature by another key than the one the challenge was issued for
-    let c = challenge(&srv, "id_rsa");
-    let req = RotateKey { challenge_id: c.challenge_id, signature: test_util::key("id_ecdsa").sign(&c.nonce).unwrap(), ssh_wrapped: vec![], recovery_wrapped: vec![] };
-    assert_eq!(Http::new(&srv, Some(&a.token)).json("POST", "/account/key", serde_json::to_value(req.clone()).unwrap()).0, 401);
-    assert_eq!(Http::new(&srv, None).json("POST", "/account/key", serde_json::to_value(req).unwrap()).0, 401);
+    let mut req = rotate_req(&srv, "id_ed25519", "id_rsa");
+    req.signature = sign_for(&srv, "id_ecdsa", SignPurpose::RotateNew, &challenge(&srv, "id_ecdsa"));
+    assert_eq!(post_rotate(&srv, &a.token, &req), 401);
+    assert_eq!(Http::new(&srv, None).json("POST", "/account/key", serde_json::to_value(rotate_req(&srv, "id_ed25519", "id_rsa")).unwrap()).0, 401);
     assert_eq!(Http::new(&srv, Some(&a.token)).get("/devices").0, 200, "nothing changed");
+}
+
+#[test]
+fn key_rotate_needs_the_current_key_not_only_a_session() {
+    let srv = spawn_test_server();
+    let a = login(&srv, "id_ed25519", "mac");
+    let b = login(&srv, "id_ed25519", "linux");
+    login(&srv, "other_ed25519", "x");
+    let ha = Http::new(&srv, Some(&a.token));
+    assert_eq!(ha.json("PUT", "/account/keyring", json!({"ssh_wrapped": "AQI=", "recovery_wrapped": "CQ=="})).0, 204);
+    let stolen_token = |req: RotateKey| post_rotate(&srv, &b.token, &req);
+    let mut cases = vec![];
+    // no old-key signature at all (an old client, or a thief with only a token)
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    r.old_signature = String::new();
+    cases.push(("empty", r));
+    let r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let mut j = serde_json::to_value(&r).unwrap();
+    j.as_object_mut().unwrap().retain(|k, _| !k.starts_with("old_"));
+    assert_eq!(Http::new(&srv, Some(&b.token)).json("POST", "/account/key", j).0, 401, "missing");
+    // signed by a key that is not the account's
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let oc = challenge(&srv, "id_ed25519");
+    (r.old_challenge_id, r.old_signature) = (oc.challenge_id, sign_for(&srv, "other_ed25519", SignPurpose::RotateOld, &oc));
+    cases.push(("wrong key", r));
+    cases.push(("another account's key", rotate_req(&srv, "other_ed25519", "id_ecdsa")));
+    // purposes and servers are not interchangeable
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let oc = challenge(&srv, "id_ed25519");
+    (r.old_challenge_id, r.old_signature) = (oc.challenge_id, sign_for(&srv, "id_ed25519", SignPurpose::Login, &oc));
+    cases.push(("login signature as the old one", r));
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let c = challenge(&srv, "id_ecdsa");
+    (r.challenge_id, r.signature) = (c.challenge_id, sign_for(&srv, "id_ecdsa", SignPurpose::RotateOld, &c));
+    cases.push(("old-key signature as the new one", r));
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let oc = challenge(&srv, "id_ed25519");
+    (r.old_challenge_id, r.old_signature) = (oc.challenge_id, test_util::key("id_ed25519").sign(&signed_message(SignPurpose::RotateOld, "evil.example", &oc.nonce)).unwrap());
+    cases.push(("signed for another server", r));
+    let mut r = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    r.old_challenge_id = r.challenge_id;
+    cases.push(("one challenge for both", r));
+    for (what, req) in cases {
+        assert_eq!(stolen_token(req), 401, "{what}");
+    }
+    // a failed attempt uses up both challenges
+    let good = rotate_req(&srv, "id_ed25519", "id_ecdsa");
+    let mut bad = good.clone();
+    bad.signature = "x".into();
+    assert_eq!(stolen_token(bad), 401);
+    assert_eq!(stolen_token(good), 401, "challenges used up");
+    // nothing changed
+    let kr: AccountKeyring = serde_json::from_slice(&ha.get("/account/keyring").1).unwrap();
+    assert_eq!((kr.ssh_wrapped, kr.recovery_wrapped, kr.wrapped_for), (vec![1, 2], Some(vec![9]), test_util::key("id_ed25519").fingerprint()));
+    assert_eq!(Http::new(&srv, Some(&b.token)).get("/devices").0, 200, "no session ended");
+    let c = challenge(&srv, "id_ed25519");
+    assert_eq!(try_login(&srv, &c, test_util::key("id_ed25519").sign(&msg(&srv, &c)).unwrap()), 200, "the key still logs in");
+    assert_eq!(rotate(&srv, &b.token, "id_ecdsa"), 204, "a proper rotation still works");
 }

@@ -1,7 +1,7 @@
 use spoko_crypto::ObjectId;
 use spoko_proto::{AccountKeyring, Pointer};
 use spoko_server::blobstore::BlobStore;
-use spoko_server::db::Db;
+use spoko_server::db::{Db, Rotation};
 use uuid::Uuid;
 
 fn db() -> Db {
@@ -281,13 +281,16 @@ fn rotate_key_keeps_the_caller_and_refuses_a_taken_key() {
     account(&db, "other");
     let me = db.login_device(acc, "mac", None).unwrap();
     let them = db.login_device(acc, "linux", None).unwrap();
-    assert!(!db.rotate_key(acc, me.device_id, "key other", "fp", b"w", b"r").unwrap());
-    assert!(db.rotate_key(acc, me.device_id, "key new", "fp new", b"w", b"r").unwrap());
+    assert_eq!(db.rotate_key(acc, me.device_id, "key jan", "key other", "fp", b"w", b"r").unwrap(), Rotation::KeyTaken);
+    // the account's key was replaced meanwhile (admin set-key): the approval is stale
+    assert_eq!(db.rotate_key(acc, me.device_id, "key old", "key new", "fp new", b"w", b"r").unwrap(), Rotation::Stale);
+    assert!(db.device_by_token(&them.token).unwrap().is_some(), "nothing changed");
+    assert_eq!(db.rotate_key(acc, me.device_id, "key jan", "key new", "fp new", b"w", b"r").unwrap(), Rotation::Done);
     assert!(db.device_by_token(&me.token).unwrap().is_some());
     assert!(db.device_by_token(&them.token).unwrap().is_none());
     let kr = db.account_keyring(acc).unwrap().unwrap();
     assert_eq!((kr.ssh_wrapped, kr.wrapped_for, kr.recovery_wrapped), (b"w".to_vec(), "fp new".into(), Some(b"r".to_vec())));
     assert_eq!(db.account_by_key("key new").unwrap(), Some(acc));
     db.execute_raw("DROP TABLE devices").unwrap();
-    assert!(db.rotate_key(acc, me.device_id, "key 3", "fp 3", b"w", b"r").is_err());
+    assert!(db.rotate_key(acc, me.device_id, "key new", "key 3", "fp 3", b"w", b"r").is_err());
 }

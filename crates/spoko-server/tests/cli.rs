@@ -38,6 +38,22 @@ fn account_create_and_set_key() {
 }
 
 #[test]
+fn keys_spoko_cannot_log_in_with_are_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().to_str().unwrap();
+    let dss = "ssh-dss AAAAB3NzaC1kc3MAAAABBQAAAAEFAAAAAQUAAAABBQ== old";
+    let sk = "sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIAcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAAAABHNzaDo= yubikey";
+    for (line, alg) in [(dss, "ssh-dss"), (sk, "sk-ssh-ed25519@openssh.com")] {
+        let (r, _) = run(&["spoko-server", "account", "create", "jan", "--ssh-key", line, "--data", data]);
+        assert_eq!(r.unwrap_err(), format!("spoko cannot log in with {alg} keys; use an Ed25519, ECDSA or RSA key kept in a file (not DSA, not a hardware sk-* key)"));
+    }
+    let pub_file = spoko_crypto::test_util::key_path("id_ecdsa521.pub");
+    run(&["spoko-server", "account", "create", "jan", "--ssh-key", pub_file.to_str().unwrap(), "--data", data]).0.unwrap();
+    let (r, _) = run(&["spoko-server", "account", "set-key", "jan", "--ssh-key", dss, "--data", data]);
+    assert!(r.unwrap_err().starts_with("spoko cannot log in with ssh-dss keys"));
+}
+
+#[test]
 fn bad_args_error() {
     let (r, _) = run(&["spoko-server", "frobnicate"]);
     assert!(r.is_err());
@@ -57,7 +73,7 @@ fn serve_runs_until_shutdown() {
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let data = dir.path().to_path_buf();
     let t = std::thread::spawn(move || {
-        spoko_server::cli::serve(&data, &format!("127.0.0.1:{port}"), async {
+        spoko_server::cli::serve(&data, &format!("127.0.0.1:{port}"), None, async {
             let _ = rx.await;
         })
         .map_err(|e| e.to_string())
@@ -82,5 +98,5 @@ fn serve_fails_when_port_taken() {
     let dir = tempfile::tempdir().unwrap();
     let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = busy.local_addr().unwrap().to_string();
-    assert!(spoko_server::cli::serve(dir.path(), &addr, async {}).is_err());
+    assert!(spoko_server::cli::serve(dir.path(), &addr, None, async {}).is_err());
 }

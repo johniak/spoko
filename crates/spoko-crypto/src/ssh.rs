@@ -34,7 +34,7 @@ impl SshKey {
         let mut key = read(path)?;
         if key.is_encrypted() {
             let pass = passphrase.ok_or(CryptoError::Encrypted)?;
-            key = key.decrypt(pass).map_err(|_| CryptoError::Passphrase)?;
+            key = key.decrypt(pass).ok().or_else(|| decrypt_padded(&key, pass)).ok_or(CryptoError::Passphrase)?;
         }
         let master = Zeroizing::new(derive_master(key.key_data())?);
         Ok(SshKey { key, master })
@@ -110,7 +110,70 @@ impl From<&RsaSigner> for KeyData {
 
 fn read(path: &Path) -> Result<PrivateKey, CryptoError> {
     let text = std::fs::read(path).map_err(CryptoError::Io)?;
-    PrivateKey::from_openssh(text).map_err(|_| CryptoError::Encoding)
+    PrivateKey::from_openssh(&text).or_else(|e| plain_section(&text).and_then(|s| padded_ecdsa(&s)).ok_or(e)).map_err(|_| {
+        // `-----BEGIN RSA PRIVATE KEY-----`, `EC PRIVATE KEY`, `PRIVATE KEY`, `ENCRYPTED PRIVATE KEY`…
+        let pem = String::from_utf8_lossy(&text);
+        if pem.trim_start().starts_with("-----BEGIN ") && !pem.contains("OPENSSH PRIVATE KEY") { CryptoError::NotOpenSsh(path.to_owned()) } else { CryptoError::Encoding }
+    })
+}
+
+// ssh-key 0.6 wants the ECDSA scalar at its full width, but OpenSSH writes it as a minimal
+// mpint, shorter when it starts with zero bytes (half of all P-521 keys, 1 in 256 others): such
+// keys are rebuilt here with the scalar padded.
+
+/// One length-prefixed field of the OpenSSH key format.
+fn take<'a>(r: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let (len, rest) = r.split_first_chunk::<4>()?;
+    let len = usize::try_from(u32::from_be_bytes(*len)).ok()?;
+    let v = rest.get(..len)?;
+    *r = &rest[len..];
+    Some(v)
+}
+
+fn put(out: &mut Vec<u8>, field: &[u8]) {
+    out.extend_from_slice(&u32::try_from(field.len()).expect("a key field fits u32").to_be_bytes());
+    out.extend_from_slice(field);
+}
+
+/// The private part of an unencrypted `openssh-key-v1` file.
+fn plain_section(text: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    let text = std::str::from_utf8(text).ok()?.trim();
+    let body: String = text.strip_prefix("-----BEGIN OPENSSH PRIVATE KEY-----")?.strip_suffix("-----END OPENSSH PRIVATE KEY-----")?.split_whitespace().collect();
+    let bytes = Zeroizing::new(data_encoding::BASE64.decode(body.as_bytes()).ok()?);
+    let mut r = bytes.strip_prefix(b"openssh-key-v1\0")?;
+    (take(&mut r)? == b"none").then_some(())?; // the cipher
+    let (_kdf, _kdf_options) = (take(&mut r)?, take(&mut r)?);
+    r = r.get(4..)?; // the key count: 1
+    let _public = take(&mut r)?;
+    Some(Zeroizing::new(take(&mut r)?.to_vec()))
+}
+
+/// The private part of an encrypted key decrypted by hand (ciphers without a tag, such as
+/// OpenSSH's default aes256-ctr).
+fn decrypt_padded(key: &PrivateKey, pass: &str) -> Option<PrivateKey> {
+    let (k, iv) = key.kdf().derive_key_and_iv(key.cipher(), pass).ok()?;
+    let mut section = Zeroizing::new(key.key_data().encrypted()?.to_vec());
+    key.cipher().decrypt(&k, &iv, &mut section, None).ok()?;
+    padded_ecdsa(&section)
+}
+
+/// An ECDSA key from its private part (`checkint checkint keytype curve Q d comment pad`).
+fn padded_ecdsa(section: &[u8]) -> Option<PrivateKey> {
+    use ssh_encoding::Decode;
+    let (check, mut r) = section.split_first_chunk::<8>()?;
+    (check[..4] == check[4..]).then_some(())?; // differ: a wrong passphrase
+    let alg = take(&mut r)?;
+    let size = [(&b"ecdsa-sha2-nistp256"[..], 32usize), (b"ecdsa-sha2-nistp384", 48), (b"ecdsa-sha2-nistp521", 66)].into_iter().find(|(a, _)| *a == alg)?.1;
+    let (curve, point, d, comment) = (take(&mut r)?, take(&mut r)?, take(&mut r)?, take(&mut r)?);
+    // not short: the parse failed for another reason
+    let mut padded = Zeroizing::new(vec![0; size.checked_sub(d.len()).filter(|n| *n > 0)?]);
+    padded.extend_from_slice(d);
+    let mut enc = Zeroizing::new(Vec::new());
+    for field in [alg, curve, point, &padded] {
+        put(&mut enc, field);
+    }
+    let data = KeypairData::decode(&mut &enc[..]).ok()?;
+    PrivateKey::new(data, String::from_utf8_lossy(comment)).ok()
 }
 
 fn derive_master(data: &KeypairData) -> Result<Key32, CryptoError> {
@@ -129,9 +192,13 @@ fn public_line(key: &PublicKey) -> String {
 }
 
 /// Parses a public key line (`ssh-ed25519 AAAA… comment`) into its comment-free form and
-/// fingerprint.
+/// fingerprint. Keys spoko cannot log in with (DSA, hardware `sk-*`) are
+/// [`CryptoError::UnsupportedKey`].
 pub fn parse_public_key(line: &str) -> Result<(String, String), CryptoError> {
     let key = PublicKey::from_openssh(line.trim()).map_err(|_| CryptoError::Encoding)?;
+    if !matches!(key.algorithm(), Algorithm::Ed25519 | Algorithm::Ecdsa { .. } | Algorithm::Rsa { .. }) {
+        return Err(CryptoError::UnsupportedKey);
+    }
     Ok((public_line(&key), key.fingerprint(HashAlg::Sha256).to_string()))
 }
 

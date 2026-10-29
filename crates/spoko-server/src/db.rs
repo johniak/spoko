@@ -43,6 +43,16 @@ pub struct DeviceRow {
     pub name: String,
 }
 
+/// What [`Db::rotate_key`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rotation {
+    Done,
+    /// Another account owns the new key.
+    KeyTaken,
+    /// The account's key is not the old key (another one, or replaced meanwhile).
+    Stale,
+}
+
 /// A device token, shown once.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceLogin {
@@ -221,22 +231,26 @@ impl Db {
         Ok(())
     }
 
-    /// Moves the account to a new key with its re-wrapped keyring and logs out every device
-    /// but `keep`. `false` when another account owns the key.
-    pub fn rotate_key(&self, account: Uuid, keep: Uuid, ssh_key: &str, fingerprint: &str, ssh_wrapped: &[u8], recovery: &[u8]) -> DbResult<bool> {
+    /// Moves the account from `old_key` to a new key with its re-wrapped keyring and logs out
+    /// every device but `keep`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rotate_key(&self, account: Uuid, keep: Uuid, old_key: &str, ssh_key: &str, fingerprint: &str, ssh_wrapped: &[u8], recovery: &[u8]) -> DbResult<Rotation> {
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let owner: Option<String> = tx.query_row("SELECT id FROM accounts WHERE ssh_key = ?1", [ssh_key], |r| r.get(0)).optional()?;
         if owner.is_some_and(|o| o != account.to_string()) {
-            return Ok(false);
+            return Ok(Rotation::KeyTaken);
         }
-        tx.execute(
-            "UPDATE accounts SET ssh_key = ?1, ssh_fingerprint = ?2, ssh_wrapped = ?3, wrapped_for = ?2, recovery_wrapped = ?4 WHERE id = ?5",
-            params![ssh_key, fingerprint, ssh_wrapped, recovery, account.to_string()],
+        let n = tx.execute(
+            "UPDATE accounts SET ssh_key = ?1, ssh_fingerprint = ?2, ssh_wrapped = ?3, wrapped_for = ?2, recovery_wrapped = ?4 WHERE id = ?5 AND ssh_key = ?6",
+            params![ssh_key, fingerprint, ssh_wrapped, recovery, account.to_string(), old_key],
         )?;
+        if n == 0 {
+            return Ok(Rotation::Stale);
+        }
         tx.execute("UPDATE devices SET revoked = 1 WHERE account_id = ?1 AND id != ?2", params![account.to_string(), keep.to_string()])?;
         tx.commit()?;
-        Ok(true)
+        Ok(Rotation::Done)
     }
 
     pub fn list_devices(&self, account: Uuid) -> DbResult<Vec<DeviceInfo>> {
