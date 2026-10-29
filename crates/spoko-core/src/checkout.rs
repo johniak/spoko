@@ -35,6 +35,8 @@ impl ApplyOpts<'_> {
 pub enum SkipReason {
     CaseCollision(RelPath),
     WindowsName(NameProblem),
+    /// A directory with untracked content occupies the path; it is never deleted.
+    DirInTheWay,
 }
 
 impl fmt::Display for SkipReason {
@@ -42,6 +44,7 @@ impl fmt::Display for SkipReason {
         match self {
             SkipReason::CaseCollision(other) => write!(f, "koliduje z '{other}' (system plików nie rozróżnia wielkości liter)"),
             SkipReason::WindowsName(p) => p.fmt(f),
+            SkipReason::DirInTheWay => f.write_str("w tym miejscu jest katalog z nieśledzonymi plikami"),
         }
     }
 }
@@ -174,16 +177,15 @@ pub fn apply_tree(
         if entry.mode == EntryMode::Commit {
             continue;
         }
+        let abs = p.to_fs(root);
+        if read_entry(&abs)?.is_some_and(|d| d.kind == DiskKind::Dir) {
+            report.skipped.push(((*p).clone(), SkipReason::DirInTheWay));
+            continue;
+        }
         if let Some(f) = opts.faults {
             f.before_write(index, p)?;
         }
         index += 1;
-        let abs = p.to_fs(root);
-        if let Some(d) = read_entry(&abs)?
-            && d.kind == DiskKind::Dir
-        {
-            fs::remove_dir_all(&abs)?;
-        }
         let disk = if entry.mode == EntryMode::Link {
             let target = String::from_utf8_lossy(&store.read_blob(entry.oid)?).into_owned();
             let outcome = platform::write_symlink(&abs, &target)?;

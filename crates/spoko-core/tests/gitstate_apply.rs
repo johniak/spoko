@@ -258,3 +258,45 @@ fn apply_inits_repo_when_missing_with_remote_config() {
     let rb = git2::Repository::open(&t.b).unwrap();
     assert_eq!(rb.find_remote("origin").unwrap().url().unwrap(), "https://example.com/r.git");
 }
+
+#[test]
+fn roundtrip_is_stable_no_ping_pong() {
+    let t = two();
+    let mut repo = init_repo(&t.a);
+    repo.remote("origin", "https://example.com/r.git").unwrap();
+    repo.config().unwrap().set_str("branch.master.remote", "origin").unwrap();
+    commit(&repo, &[("a.txt", "a")], "init");
+    fs::write(t.a.join("a.txt"), "stashed").unwrap();
+    repo.stash_save(&sig(), "wip", None).unwrap();
+    let gs_a = cap(&t.a, &t.store_a);
+    ship(&t, &gs_a);
+    init_repo(&t.b);
+    apply(&t.b, &t.store_b, None, &gs_a).unwrap();
+    let gs_b = cap(&t.b, &t.store_b);
+    assert_eq!(gs_b.files["config"].oid, gs_a.files["config"].oid, "config must not ping-pong");
+    assert_eq!(gs_b.index_tree, gs_a.index_tree);
+    assert_eq!(gs_b.stash, gs_a.stash);
+    assert_eq!(gs_b.refs, gs_a.refs);
+    assert_eq!(gs_b.head, gs_a.head);
+    // and back again
+    spoko_core::gitstate::copy_objects(t.store_b.repo(), t.store_a.repo(), &[gs_b.files["config"].oid]).unwrap();
+    apply(&t.a, &t.store_a, Some(&gs_a), &gs_b).unwrap();
+    assert_eq!(cap(&t.a, &t.store_a).files["config"].oid, gs_a.files["config"].oid);
+}
+
+#[test]
+fn canonical_config_preserves_tricky_values() {
+    let src = b"[alias]\n\tx = \"!f() { echo \\\"hi\\\"; }; f\"\n\tempty = \"\"\n[branch \"feat/a.b\"]\n\tremote = origin\n[url \"git@x:\"]\n\tinsteadOf = https://x/\n\tinsteadOf = http://x/\n";
+    let out = config_merge::strip_local(src).unwrap();
+    let d = tempfile::tempdir().unwrap();
+    let p = d.path().join("c");
+    fs::write(&p, &out).unwrap();
+    let cfg = git2::Config::open(&p).unwrap();
+    assert_eq!(cfg.get_string("alias.x").unwrap(), "!f() { echo \"hi\"; }; f");
+    assert_eq!(cfg.get_string("alias.empty").unwrap(), "");
+    assert_eq!(cfg.get_string("branch.feat/a.b.remote").unwrap(), "origin");
+    let mut vals = vec![];
+    cfg.multivar("url.git@x:.insteadof", None).unwrap().for_each(|e| vals.push(e.value().unwrap().to_owned())).unwrap();
+    assert_eq!(vals, vec!["https://x/", "http://x/"]);
+    assert_eq!(config_merge::strip_local(&out).unwrap(), out, "canonical form is a fixed point");
+}

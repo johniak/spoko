@@ -199,3 +199,15 @@ fn apply_exec_and_symlink() {
     e.apply(&to, &to2, &ApplyOpts::default()).unwrap();
     assert_eq!(fs::metadata(e.root().join("run.sh")).unwrap().permissions().mode() & 0o111, 0);
 }
+
+#[test]
+fn untracked_dir_in_the_way_is_never_deleted() {
+    let mut e = Env::new();
+    std::fs::create_dir_all(e.root().join("build/out")).unwrap();
+    std::fs::write(e.root().join("build/out/precious.bin"), b"user data").unwrap();
+    let to = e.map(&[("build", b"now a file remotely"), ("ok", b"1")]);
+    let r = e.apply(&WorkMap::default(), &to, &ApplyOpts::default()).unwrap();
+    assert!(e.root().join("build/out/precious.bin").exists());
+    assert_eq!(r.skipped, vec![(RelPath::new("build"), SkipReason::DirInTheWay)]);
+    assert_eq!(r.written, vec![RelPath::new("ok")]);
+}

@@ -34,46 +34,72 @@ fn temp_config(bytes: &[u8]) -> std::io::Result<(tempfile::TempDir, std::path::P
     Ok((dir, path))
 }
 
-fn local_keys(cfg: &git2::Config) -> Result<Vec<(String, String)>, git2::Error> {
+fn all_entries(cfg: &git2::Config) -> Result<Vec<(String, String)>, git2::Error> {
     let mut out = Vec::new();
     let mut entries = cfg.entries(None)?;
     while let Some(e) = entries.next() {
         let e = e?;
-        if let (Ok(name), Ok(value)) = (e.name(), e.value())
-            && is_machine_local(name)
-        {
+        if let (Ok(name), Ok(value)) = (e.name(), e.value()) {
             out.push((name.to_owned(), value.to_owned()));
         }
     }
     Ok(out)
 }
 
-/// Config text with machine-local keys removed (what gets captured).
-pub fn strip_local(bytes: &[u8]) -> crate::Result<Vec<u8>> {
+fn read_entries(bytes: &[u8]) -> crate::Result<Vec<(String, String)>> {
     let (_dir, path) = temp_config(bytes)?;
-    let mut cfg = git2::Config::open(&path)?;
-    for (name, _) in local_keys(&cfg)? {
-        cfg.remove_multivar(&name, ".*")?;
+    Ok(all_entries(&git2::Config::open(&path)?)?)
+}
+
+fn quote(v: &str) -> String {
+    let needs = v.is_empty() || v.starts_with(' ') || v.ends_with(' ') || v.contains(['#', ';', '"', '\\', '\n', '\t']);
+    if !needs {
+        return v.to_owned();
     }
-    drop(cfg);
-    Ok(std::fs::read(&path)?)
+    let esc = v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n").replace('\t', "\\t");
+    format!("\"{esc}\"")
+}
+
+/// Deterministic config text: sections and keys sorted, multivar order kept.
+/// Both machines therefore produce byte-identical files for the same settings (no ping-pong).
+fn canonical(entries: &[(String, String)]) -> Vec<u8> {
+    use std::collections::BTreeMap;
+    let mut sections: BTreeMap<(String, Option<String>), BTreeMap<String, Vec<&str>>> = BTreeMap::new();
+    for (name, value) in entries {
+        let (Some((section, rest)), Some(dot)) = (name.split_once('.'), name.rfind('.')) else { continue };
+        let var = &name[dot + 1..];
+        let sub = (rest.len() > var.len()).then(|| rest[..rest.len() - var.len() - 1].to_owned());
+        sections.entry((section.to_ascii_lowercase(), sub)).or_default().entry(var.to_ascii_lowercase()).or_default().push(value);
+    }
+    let mut out = String::new();
+    for ((section, sub), vars) in sections {
+        match sub {
+            Some(s) => out.push_str(&format!("[{section} \"{}\"]\n", s.replace('\\', "\\\\").replace('"', "\\\""))),
+            None => out.push_str(&format!("[{section}]\n")),
+        }
+        for (var, values) in vars {
+            for v in values {
+                out.push_str(&format!("\t{var} = {}\n", quote(v)));
+            }
+        }
+    }
+    out.into_bytes()
+}
+
+/// Canonical config text with machine-local keys removed (what gets captured).
+pub fn strip_local(bytes: &[u8]) -> crate::Result<Vec<u8>> {
+    let entries: Vec<_> = read_entries(bytes)?.into_iter().filter(|(k, _)| !is_machine_local(k)).collect();
+    Ok(canonical(&entries))
 }
 
 /// Remote config with this machine's local keys (from `local_config_path`, if it exists) put back.
 pub fn merge(remote: &[u8], local_config_path: &Path) -> crate::Result<Vec<u8>> {
-    let stripped = strip_local(remote)?;
-    let (_dir, path) = temp_config(&stripped)?;
+    let mut entries: Vec<_> = read_entries(remote)?.into_iter().filter(|(k, _)| !is_machine_local(k)).collect();
     let local = match std::fs::read(local_config_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e.into()),
     };
-    let (_ldir, lpath) = temp_config(&local)?;
-    let keep = local_keys(&git2::Config::open(&lpath)?)?;
-    let mut cfg = git2::Config::open(&path)?;
-    for (name, value) in keep {
-        cfg.set_multivar(&name, "^$", &value)?;
-    }
-    drop(cfg);
-    Ok(std::fs::read(&path)?)
+    entries.extend(read_entries(&local)?.into_iter().filter(|(k, _)| is_machine_local(k)));
+    Ok(canonical(&entries))
 }
