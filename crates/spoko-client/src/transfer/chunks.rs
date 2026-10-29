@@ -1,6 +1,7 @@
 //! Content-defined chunking for big objects and Docker volume streams.
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use fastcdc::v2020::StreamCDC;
 use serde::{Deserialize, Serialize};
@@ -83,38 +84,116 @@ pub fn parallel_put(
     })
 }
 
+/// Plaintext a download request asks for. Sizes are unknown up front: the first request of a
+/// worker assumes whole objects of [`CHUNK_THRESHOLD`] bytes (the most one can be), later
+/// ones are sized from the largest object of the previous response.
+pub const GET_BYTES: usize = 4 << 20;
+/// Most ids in one download request.
+pub const GET_IDS: usize = 256;
+
+/// Most decrypted data a download held at once.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Buffered {
+    pub bytes: usize,
+    pub objects: usize,
+}
+
+/// Decrypted objects held between a worker and the consumer, and the peak.
+#[derive(Default)]
+struct Held {
+    bytes: AtomicUsize,
+    objects: AtomicUsize,
+    peak_bytes: AtomicUsize,
+    peak_objects: AtomicUsize,
+}
+
+impl Held {
+    fn add(&self, bytes: usize, objects: usize) {
+        self.peak_bytes.fetch_max(self.bytes.fetch_add(bytes, Ordering::SeqCst) + bytes, Ordering::SeqCst);
+        self.peak_objects.fetch_max(self.objects.fetch_add(objects, Ordering::SeqCst) + objects, Ordering::SeqCst);
+    }
+    fn sub(&self, bytes: usize, objects: usize) {
+        self.bytes.fetch_sub(bytes, Ordering::SeqCst);
+        self.objects.fetch_sub(objects, Ordering::SeqCst);
+    }
+}
+
+/// Fetches and decrypts `ids` on [`WORKERS`] threads and hands every object to `sink` on the
+/// calling thread as its response arrives; missing ids are simply never handed over. Requests
+/// ask for about `request_bytes` and a worker hands its batch over before the next request,
+/// so at most `WORKERS + 1` batches are held, however many ids there are. An error of `sink`
+/// stops the download.
+pub fn parallel_get_each(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    ids: &[ObjectId],
+    request_bytes: usize,
+    sink: &mut dyn FnMut(ObjectId, u8, Vec<u8>) -> Result<()>,
+) -> Result<Buffered> {
+    let per = ids.len().div_ceil(WORKERS).max(1);
+    let held = Held::default();
+    let first = (request_bytes / CHUNK_THRESHOLD as usize).clamp(1, GET_IDS);
+    std::thread::scope(|s| {
+        // rendezvous: a worker waits until the consumer takes its batch
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(usize, Vec<(ObjectId, u8, Vec<u8>)>)>(0);
+        let handles: Vec<_> = ids
+            .chunks(per)
+            .map(|part| {
+                let (tx, held) = (tx.clone(), &held);
+                s.spawn(move || -> Result<()> {
+                    let (mut n, mut rest) = (first, part);
+                    while !rest.is_empty() {
+                        let (sub, tail) = rest.split_at(n.min(rest.len()));
+                        rest = tail;
+                        let (mut batch, mut bytes, mut largest) = (Vec::with_capacity(sub.len()), 0, 1);
+                        for (id, sealed) in server.get(sub)? {
+                            let (kind, data) = open_object(kr, &id, &sealed)?;
+                            (bytes, largest) = (bytes + data.len(), largest.max(data.len()));
+                            batch.push((id, kind, data));
+                        }
+                        n = (request_bytes / largest).clamp(1, (2 * n).min(GET_IDS));
+                        held.add(bytes, batch.len());
+                        if tx.send((bytes, batch)).is_err() { break }
+                    }
+                    Ok(())
+                })
+            })
+            .collect();
+        drop(tx);
+        let mut done = Ok(());
+        for (bytes, batch) in &rx {
+            let objects = batch.len();
+            for (id, kind, data) in batch {
+                done = done.and_then(|()| sink(id, kind, data));
+            }
+            held.sub(bytes, objects);
+            if done.is_err() { break }
+        }
+        // a worker blocked on handing over a batch sees the consumer gone and stops
+        drop(rx);
+        for h in handles {
+            let r = h.join().expect("download worker panicked");
+            done = done.and(r);
+        }
+        done?;
+        Ok(Buffered { bytes: held.peak_bytes.load(Ordering::SeqCst), objects: held.peak_objects.load(Ordering::SeqCst) })
+    })
+}
+
 /// Fetches and decrypts `ids` in parallel; missing ids are simply absent from the result.
 pub fn parallel_get(
     server: &dyn ObjectServer,
     kr: &Keyring,
     ids: &[ObjectId],
 ) -> Result<Vec<(ObjectId, u8, Vec<u8>)>> {
-    if ids.is_empty() {
-        return Ok(vec![]);
+    let mut all = Vec::new();
+    if !ids.is_empty() {
+        parallel_get_each(server, kr, ids, GET_BYTES, &mut |i, k, d| {
+            all.push((i, k, d));
+            Ok(())
+        })?;
     }
-    let per = ids.len().div_ceil(WORKERS).max(1);
-    std::thread::scope(|s| {
-        let handles: Vec<_> = ids
-            .chunks(per)
-            .map(|part| {
-                s.spawn(move || -> Result<Vec<(ObjectId, u8, Vec<u8>)>> {
-                    let mut out = Vec::new();
-                    for sub in part.chunks(256) {
-                        for (id, sealed) in server.get(sub)? {
-                            let (kind, data) = open_object(kr, &id, &sealed)?;
-                            out.push((id, kind, data));
-                        }
-                    }
-                    Ok(out)
-                })
-            })
-            .collect();
-        let mut all = Vec::new();
-        for h in handles {
-            all.extend(h.join().expect("download worker panicked")?);
-        }
-        Ok(all)
-    })
+    Ok(all)
 }
 
 fn flush(

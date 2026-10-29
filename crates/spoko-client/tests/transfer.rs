@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use git2::Oid;
 use rand::RngCore;
 use spoko_client::test_util::MemServer;
-use spoko_client::transfer::download::fetch_closure;
+use spoko_client::transfer::WORKERS;
+use spoko_client::transfer::download::{fetch_closure, fetch_closure_limited};
 use spoko_client::transfer::enumerate::new_objects;
 use spoko_client::transfer::known::KnownSet;
 use spoko_client::transfer::upload::push_objects;
@@ -62,6 +63,38 @@ fn push(
 ) -> spoko_client::transfer::upload::UploadStats {
     let objs = new_objects(&a.store, &[snap], &a.known, kr).unwrap();
     push_objects(&a.store, srv, kr, &mut a.known, &objs).unwrap()
+}
+
+#[test]
+fn first_download_holds_a_bounded_part_of_a_wide_level() {
+    let kr = Keyring::generate();
+    let srv = MemServer::default();
+    let mut a = side();
+    let b = side();
+    // 400 incompressible 16 KiB assets in one directory: one level of the walk, 6.4 MiB
+    let size = 16 << 10;
+    let files: Vec<(String, Vec<u8>)> = (0..400)
+        .map(|i| {
+            let mut c = vec![0u8; size];
+            rand::thread_rng().fill_bytes(&mut c);
+            (format!("assets/{i:03}.bin"), c)
+        })
+        .collect();
+    let refs: Vec<(&str, Vec<u8>)> = files.iter().map(|(p, c)| (p.as_str(), c.clone())).collect();
+    let snap = snapshot(&a.store, &refs, &[], None);
+    push(&mut a, &srv, &kr, snap);
+    let request = 64 << 10;
+    let stats = fetch_closure_limited(&b.store, &srv, &kr, &[snap], request).unwrap();
+    // each worker's batch, plus the one being written
+    let batches = WORKERS + 1;
+    let peak = stats.peak_buffered;
+    assert!(peak.objects > 0 && peak.bytes <= batches * request, "{peak:?}");
+    assert!(peak.objects <= batches * (request / size), "{peak:?}");
+    for (_, c) in &files {
+        let oid = Oid::hash_object(git2::ObjectType::Blob, c).unwrap();
+        assert_eq!(&b.store.read_blob(oid).unwrap(), c);
+    }
+    assert!(b.store.has(snap));
 }
 
 #[test]

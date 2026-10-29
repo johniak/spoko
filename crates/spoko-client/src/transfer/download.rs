@@ -6,7 +6,7 @@ use spoko_core::store::Store;
 use spoko_crypto::{Keyring, ObjectId, git_object_id};
 
 use super::ObjectServer;
-use super::chunks::{Manifest, fetch_stream, parallel_get};
+use super::chunks::{Buffered, GET_BYTES, Manifest, fetch_stream, parallel_get_each};
 use super::codec::{KIND_MANIFEST, object_type};
 use super::enumerate::{Role, deps};
 use crate::{ClientError, Result};
@@ -16,6 +16,9 @@ pub struct DownloadStats {
     pub objects: usize,
     /// Server ids of everything downloaded (now known to be on the server).
     pub ids: Vec<ObjectId>,
+    /// Most decrypted objects held at once on their way to the store (trees, commits and tags
+    /// waiting for the final write not counted).
+    pub peak_buffered: Buffered,
 }
 
 fn verify(kind: ObjectType, data: &[u8], oid: Oid) -> Result<()> {
@@ -39,8 +42,20 @@ pub fn fetch_closure(
     kr: &Keyring,
     roots: &[Oid],
 ) -> Result<DownloadStats> {
+    fetch_closure_limited(store, server, kr, roots, GET_BYTES)
+}
+
+/// [`fetch_closure`] with download requests of about `request_bytes` (what bounds the memory
+/// a wide level of the walk takes, see [`parallel_get_each`]).
+pub fn fetch_closure_limited(
+    store: &Store,
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    roots: &[Oid],
+    request_bytes: usize,
+) -> Result<DownloadStats> {
     // small objects are collected into packfiles; big blobs stream to loose files
-    store.batch(|| fetch_closure_inner(store, server, kr, roots))
+    store.batch(|| fetch_closure_inner(store, server, kr, roots, request_bytes))
 }
 
 fn fetch_closure_inner(
@@ -48,6 +63,7 @@ fn fetch_closure_inner(
     server: &dyn ObjectServer,
     kr: &Keyring,
     roots: &[Oid],
+    request_bytes: usize,
 ) -> Result<DownloadStats> {
     let odb = store.repo().odb()?;
     let mut stats = DownloadStats::default();
@@ -64,22 +80,13 @@ fn fetch_closure_inner(
             .iter()
             .map(|(o, _, _)| git_object_id(kr, o.as_bytes()))
             .collect();
-        let got: HashMap<ObjectId, (u8, Vec<u8>)> = parallel_get(server, kr, &ids)?
-            .into_iter()
-            .map(|(i, k, d)| (i, (k, d)))
-            .collect();
+        // objects of this level not received yet
+        let mut wanted: HashMap<ObjectId, (Oid, Role, bool)> = ids.iter().copied().zip(frontier).collect();
         let mut next = Vec::new();
-        for ((oid, role, required), id) in frontier.into_iter().zip(ids) {
-            let Some((kind, data)) = got.get(&id) else {
-                if required {
-                    return Err(ClientError::Integrity(format!(
-                        "object {oid} missing on server"
-                    )));
-                }
-                continue;
-            };
-            let (kind, data) = if *kind == KIND_MANIFEST {
-                let m = Manifest::from_bytes(data)?;
+        let mut take = |id: ObjectId, kind: u8, data: Vec<u8>| -> Result<()> {
+            let Some((oid, role, _)) = wanted.remove(&id) else { return Ok(()) };
+            let (kind, data) = if kind == KIND_MANIFEST {
+                let m = Manifest::from_bytes(&data)?;
                 let t = object_type(m.kind)?;
                 if t == ObjectType::Blob {
                     let mut w = odb.writer(
@@ -96,13 +103,13 @@ fn fetch_closure_inner(
                     }
                     stats.objects += 1;
                     stats.ids.push(id);
-                    continue;
+                    return Ok(());
                 }
                 let mut buf = Vec::new();
                 fetch_stream(server, kr, &m, &mut buf)?;
                 (t, buf)
             } else {
-                (object_type(*kind)?, data.clone())
+                (object_type(kind)?, data)
             };
             verify(kind, &data, oid)?;
             stats.objects += 1;
@@ -114,7 +121,7 @@ fn fetch_closure_inner(
             };
             if kind == ObjectType::Blob {
                 store.write_raw(kind, &data)?;
-                continue;
+                return Ok(());
             }
             for d in deps(kind, role, &data) {
                 if !store.has(d.0) && !seen.contains(&d.0) {
@@ -122,6 +129,15 @@ fn fetch_closure_inner(
                 }
             }
             pending.insert(oid, (kind, data, role));
+            Ok(())
+        };
+        let held = parallel_get_each(server, kr, &ids, request_bytes, &mut take)?;
+        stats.peak_buffered.bytes = stats.peak_buffered.bytes.max(held.bytes);
+        stats.peak_buffered.objects = stats.peak_buffered.objects.max(held.objects);
+        if let Some((oid, _, _)) = wanted.values().find(|(_, _, required)| *required) {
+            return Err(ClientError::Integrity(format!(
+                "object {oid} missing on server"
+            )));
         }
         frontier = next;
     }
