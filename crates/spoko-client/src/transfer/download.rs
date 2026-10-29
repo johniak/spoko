@@ -89,11 +89,8 @@ fn fetch_closure_inner(
                 let m = Manifest::from_bytes(&data)?;
                 let t = object_type(m.kind)?;
                 if t == ObjectType::Blob {
-                    let mut w = odb.writer(
-                        usize::try_from(m.size)
-                            .map_err(|_| ClientError::Integrity("too large".into()))?,
-                        t,
-                    )?;
+                    let size = usize::try_from(m.size).map_err(|_| ClientError::Integrity("too large".into()))?;
+                    let mut w = odb.writer(size, t)?;
                     fetch_stream(server, kr, &m, &mut w)?;
                     w.flush()?;
                     if w.finalize()? != oid {

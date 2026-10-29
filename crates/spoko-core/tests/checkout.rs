@@ -184,7 +184,7 @@ impl ApplyFaults for SaveDuring {
 #[test]
 fn file_saved_during_the_apply_is_left_alone() {
     let mut e = Env::new();
-    let v1 = e.map(&[("a", b"1"), ("b", b"1"), ("c", b"1")]);
+    let v1 = e.map(&[("a", b"1"), ("b", b"1"), ("c", b"1"), ("old", b"1")]);
     e.apply(&WorkMap::default(), &v1, &ApplyOpts::default()).unwrap();
     let v2 = e.map(&[("a", b"2"), ("b", b"2"), ("c", b"2")]);
     // saved after the up-front check, before spoko got to it
@@ -192,6 +192,7 @@ fn file_saved_during_the_apply_is_left_alone() {
     let err = e.apply(&v1, &v2, &ApplyOpts { faults: Some(&faults), ..Default::default() }).unwrap_err();
     assert!(matches!(&err, ApplyError::LocalChanged(p) if *p == vec![RelPath::new("b")]), "{err}");
     assert_eq!((e.read("a"), e.read("b"), e.read("c")), (b"2".to_vec(), b"saved by the user meanwhile".to_vec(), b"2".to_vec()));
+    assert!(!e.root().join("old").exists());
     // saved while spoko was writing it: the rename does not go over it
     let v3 = e.map(&[("a", b"3"), ("c", b"3")]);
     let faults = SaveDuring { at: 0, path: e.root().join("a") };

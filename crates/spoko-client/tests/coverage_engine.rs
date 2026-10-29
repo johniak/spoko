@@ -482,6 +482,35 @@ fn merge_followed_by_a_newer_remote_fast_forwards_and_reports_the_merge() {
 }
 
 #[test]
+fn merge_followed_by_a_remote_change_while_git_runs_reports_the_merge() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    a.write("f.txt", "1");
+    a.write("g.txt", "g");
+    let mut ea = a.create();
+    let id = ea.project_id;
+    let (mut eb, _) = b.join(id);
+    a.write("f.txt", "same");
+    b.write("f.txt", "same");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    drop(ea);
+    // while B applies the merge, A pushes again and a git command starts on B
+    let (ctx, root, lock) = (a.ctx.clone(), a.root.clone(), b.root.join(".git/index.lock"));
+    eb.before_apply = Some(Box::new(move || {
+        push_from(ctx, id, &root, "g.txt", "g2");
+        std::fs::create_dir_all(lock.parent().unwrap()).unwrap();
+        std::fs::write(&lock, "").unwrap();
+    }));
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Merged { conflicts: 0 });
+    assert_eq!(b.text("g.txt"), "g", "A's second push waits for git");
+    // (the lock was all there was of that repository)
+    std::fs::remove_dir_all(b.root.join(".git")).unwrap();
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::FastForwarded);
+    assert_eq!(b.text("g.txt"), "g2");
+}
+
+#[test]
 fn path_conflicting_again_keeps_only_its_newest_conflict() {
     let mut w = World::new();
     let a = w.device("a");
