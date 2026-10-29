@@ -29,6 +29,7 @@ pub enum Request {
     Resume { project: Uuid, confirm: bool },
     Resolve { project: Uuid, path: String, done: bool },
     HooksRun { project: Uuid },
+    HooksDismiss { project: Uuid },
     VolumePush { project: Uuid, volume: Option<String> },
     VolumePull { project: Uuid, volume: Option<String>, force: bool, fresh: bool },
     Log { project: Uuid, path: Option<String>, limit: usize },
@@ -45,6 +46,7 @@ impl Request {
             | Request::Resume { project, .. }
             | Request::Resolve { project, .. }
             | Request::HooksRun { project }
+            | Request::HooksDismiss { project }
             | Request::VolumePush { project, .. }
             | Request::VolumePull { project, .. }
             | Request::Log { project, .. }

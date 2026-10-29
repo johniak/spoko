@@ -299,10 +299,13 @@ pub fn hooks(ctx: &Ctx, cmd: HooksCmd, out: &mut dyn Write) -> Res<()> {
             }
         }
         HooksCmd::Dismiss => {
-            ctx.with_engine(project, &root, |e| {
-                e.state.pending_hooks.clear();
-                Ok(e.save()?)
-            })?;
+            // through the daemon when it runs: it owns the state and would write the hooks back
+            if ctx.via_daemon(&Request::HooksDismiss { project })?.is_none() {
+                ctx.with_engine(project, &root, |e| {
+                    e.state.pending_hooks.clear();
+                    Ok(e.save()?)
+                })?;
+            }
             writeln!(out, "Pominięto oczekujące hooki.")?;
         }
     }

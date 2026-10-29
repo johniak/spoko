@@ -201,3 +201,25 @@ fn offline_then_reconnect_syncs() {
     stop_daemon(&a, ha);
     stop_daemon(&b, hb);
 }
+
+#[test]
+fn hooks_dismiss_goes_through_the_daemon() {
+    let mut w = World::new();
+    let a = w.device("a");
+    a.write(".spokoconfig", "[[watch]]\nfiles = [\"package-lock.json\"]\nrun = \"npm ci\"\nmode = \"ask\"\n");
+    let mut e = a.create();
+    let project = e.project_id;
+    e.state.pending_hooks = vec![0];
+    e.save().unwrap();
+    drop(e);
+    let h = start_daemon(&a, project);
+    let pending = || match ipc::request(&a.home, &Request::Status).unwrap() {
+        Response::Status { report } => report.projects[0].pending_hooks.clone(),
+        other => panic!("{other:?}"),
+    };
+    wait_for(Duration::from_secs(10), || pending() == vec!["npm ci".to_owned()]);
+    assert_eq!(ipc::request(&a.home, &Request::HooksDismiss { project }).unwrap(), Response::Ok);
+    assert!(pending().is_empty());
+    stop_daemon(&a, h);
+    assert!(a.open(project).state.pending_hooks.is_empty(), "the daemon's own state no longer has them");
+}

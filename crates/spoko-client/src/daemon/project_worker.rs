@@ -204,6 +204,10 @@ impl Worker {
                 Ok(Response::Text { text: if out == ResolveOutcome::Resolved { "resolved".into() } else { "unchanged".into() } })
             }
             Request::HooksRun { .. } => crate::hooks::run_pending(&mut self.engine).map(|runs| Response::Hooks { runs }),
+            Request::HooksDismiss { .. } => {
+                self.engine.state.pending_hooks.clear();
+                self.engine.save().map(|()| Response::Ok)
+            }
             Request::Log { path, limit, .. } => {
                 let p = path.as_deref().map(RelPath::new);
                 let entries = history::log(&self.engine, p.as_ref(), *limit)?
