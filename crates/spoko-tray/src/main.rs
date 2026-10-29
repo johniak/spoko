@@ -1,3 +1,6 @@
+// a tray app: no console window on Windows
+#![windows_subsystem = "windows"]
+
 fn main() {
     spoko_tray::os_glue::event_loop::run(spoko_core_home());
 }

@@ -88,3 +88,14 @@ fn locked_daemon_offers_unlock_in_a_terminal() {
     assert!(matches!(&unlock.action, Some(Action::Terminal { command, .. }) if command == "spoko unlock"));
     assert!(matches!(m.items.last().unwrap().action, Some(Action::Quit)));
 }
+
+#[test]
+fn first_line_says_spoko_runs_on_this_device() {
+    let m = build(&report(vec![project("a", SyncState::Synced), project("b", SyncState::Synced)]));
+    assert_eq!(m.items[0].label, "spoko działa · mac · 2 projekty");
+    assert!(!m.items[0].enabled && m.items[0].action.is_none());
+    assert_eq!(build(&report(vec![project("a", SyncState::Synced)])).items[0].label, "spoko działa · mac · 1 projekt");
+    let none = build(&report(vec![]));
+    assert_eq!(none.items[0].label, "spoko działa · mac · brak projektów (spoko init)");
+    assert_eq!(build(&report((0..5).map(|i| project(&i.to_string(), SyncState::Synced)).collect())).items[0].label, "spoko działa · mac · 5 projektów");
+}

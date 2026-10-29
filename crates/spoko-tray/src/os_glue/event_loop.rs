@@ -71,8 +71,27 @@ fn open_terminal(cwd: &Path, command: &str) {
     };
 }
 
-pub fn run(home: std::path::PathBuf) -> ! {
-    let event_loop = EventLoopBuilder::new().build();
+/// `spoko` next to this executable (both come from the same install), else from `PATH`.
+fn spoko_exe() -> std::path::PathBuf {
+    let name = format!("spoko{}", std::env::consts::EXE_SUFFIX);
+    std::env::current_exe().ok().map(|e| e.with_file_name(&name)).filter(|p| p.is_file()).unwrap_or_else(|| name.into())
+}
+
+pub fn run(home: std::path::PathBuf) {
+    // one icon per user: a second tray (another `spoko daemon` start) leaves at once
+    let _ = std::fs::create_dir_all(&home);
+    let Ok(file) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join("tray.lock")) else { return };
+    let lock = Box::leak(Box::new(fd_lock::RwLock::new(file)));
+    let Ok(guard) = lock.try_write() else { return };
+    std::mem::forget(guard);
+    #[allow(unused_mut)]
+    let mut event_loop = EventLoopBuilder::new().build();
+    #[cfg(target_os = "macos")]
+    {
+        // a menu-bar item only: no Dock icon, no app switcher entry
+        use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
+        event_loop.set_activation_policy(ActivationPolicy::Accessory);
+    }
     let mut tray: Option<TrayIcon> = None;
     let mut current: Option<MenuModel> = None;
     let mut actions: HashMap<MenuId, Action> = HashMap::new();
@@ -92,7 +111,7 @@ pub fn run(home: std::path::PathBuf) -> ! {
                 }
                 Some(Action::Terminal { cwd, command }) => open_terminal(cwd, command),
                 Some(Action::StartDaemon) => {
-                    let _ = Command::new("spoko").args(["daemon", "start"]).spawn();
+                    let _ = Command::new(spoko_exe()).args(["daemon", "start"]).spawn();
                 }
                 None => {}
             }

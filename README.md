@@ -42,6 +42,7 @@ mirrors it. It also works in directories that are not git repositories at all.
 ```sh
 # build (Rust 1.95+)
 cargo install --path crates/spoko          # the `spoko` CLI + daemon
+cargo install --path crates/spoko-tray     # the menu-bar / tray icon (started by the daemon)
 cargo install --path crates/spoko-server   # only if you host the server yourself
 
 # 1. a server (see "Self-hosting" below) with an account for your SSH public key, then on
@@ -59,8 +60,11 @@ spoko daemon start
 spoko daemon install
 ```
 
-Then just work. `spoko status` shows what is going on; the tray app (`spoko-tray`) shows the
-same in the menu bar.
+Then just work. While the daemon runs, a dot in the menu bar (tray on Windows/Linux) shows
+that spoko is on: green synced, blue syncing, grey paused or locked, orange offline, red
+conflict. Its menu says "spoko działa · <device> · N projects" and has the actions (sync,
+pause, resolve, unlock, start the daemon). `spoko status` shows the same in the terminal.
+`SPOKO_NO_TRAY=1` keeps the icon off (headless machines).
 
 ## Commands
 

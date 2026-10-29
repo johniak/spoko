@@ -80,7 +80,7 @@ pub fn build(r: &StatusReport) -> MenuModel {
         };
     }
     let icon = r.projects.iter().map(|p| state_icon(&p.state)).max().unwrap_or(IconState::Ok);
-    let mut items = Vec::new();
+    let mut items = vec![info(format!("spoko działa · {} · {}", r.device_name, projects_pl(r.projects.len()))), info(SEPARATOR)];
     for p in &r.projects {
         let id = p.id;
         items.push(info(format!("{} — {}", p.name, state_label(&p.state))));
@@ -112,6 +112,15 @@ pub fn build(r: &StatusReport) -> MenuModel {
     };
     items.push(act("Zakończ", Action::Quit));
     MenuModel { icon, tooltip: tooltip.into(), items }
+}
+
+fn projects_pl(n: usize) -> String {
+    match n {
+        0 => "brak projektów (spoko init)".into(),
+        1 => "1 projekt".into(),
+        n if (2..=4).contains(&(n % 10)) && !(12..=14).contains(&(n % 100)) => format!("{n} projekty"),
+        n => format!("{n} projektów"),
+    }
 }
 
 pub fn build_unreachable() -> MenuModel {

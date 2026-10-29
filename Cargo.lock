@@ -3805,6 +3805,7 @@ dependencies = [
 name = "spoko-tray"
 version = "0.1.0"
 dependencies = [
+ "fd-lock",
  "spoko-client",
  "tao",
  "tray-icon",

@@ -62,3 +62,23 @@ pub fn read_passphrase(prompt: &str) -> std::io::Result<String> {
     std::io::stdin().read_line(&mut line)?;
     Ok(line.trim_end_matches(['\r', '\n']).to_owned())
 }
+
+/// Shows the menu-bar / tray icon (`spoko-tray`, installed next to `spoko`) for the daemon;
+/// the tray itself keeps a single instance. Nothing happens when it is not installed or
+/// `SPOKO_NO_TRAY` / `SPOKO_NO_DESKTOP_NOTIFY` is set (headless machines, tests).
+pub fn spawn_tray() {
+    use std::process::{Command, Stdio};
+    if std::env::var_os("SPOKO_NO_TRAY").is_some() || std::env::var_os("SPOKO_NO_DESKTOP_NOTIFY").is_some() {
+        return;
+    }
+    let Some(tray) = std::env::current_exe().ok().map(|e| e.with_file_name(format!("spoko-tray{}", std::env::consts::EXE_SUFFIX))).filter(|p| p.is_file()) else { return };
+    let mut cmd = Command::new(tray);
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    let _ = cmd.spawn();
+}

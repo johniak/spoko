@@ -27,6 +27,7 @@ pub fn run(ctx: &Ctx, cmd: Option<DaemonCmd>, out: &mut dyn Write) -> Res<()> {
         DaemonCmd::Run => {
             let notifier: Arc<dyn Notifier> = if std::env::var_os("SPOKO_NO_DESKTOP_NOTIFY").is_some() { Arc::new(PrintNotifier) } else { Arc::new(NativeNotifier) };
             let opts = DaemonOpts { ext: Arc::new(crate::os_glue::docker_ext()), notifier, env: ctx.env.clone(), rescan_every: Duration::from_secs(300) };
+            crate::os_glue::spawn_tray();
             daemon::run(&ctx.home, opts)?;
         }
         DaemonCmd::Start => {
