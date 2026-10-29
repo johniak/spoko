@@ -119,13 +119,16 @@ const POOL_MAX_BLOB: u64 = 1 << 20;
 /// Content buffered for the pool before it is written.
 const WAVE_BYTES: usize = 64 << 20;
 
-/// Writes `jobs` (path, absolute path, content, exec) on a few threads. Work is handed out a
+/// A pooled write: project path, absolute path, content, executable.
+type WriteJob<'p> = (&'p RelPath, PathBuf, Vec<u8>, bool);
+
+/// Writes `jobs` on a few threads. Work is handed out a
 /// directory at a time: the filesystem serializes creates and renames within one directory.
-fn write_pool<'p>(jobs: Vec<(&'p RelPath, PathBuf, Vec<u8>, bool)>) -> io::Result<Vec<(&'p RelPath, DiskEntry)>> {
+fn write_pool<'p>(jobs: Vec<WriteJob<'p>>) -> io::Result<Vec<(&'p RelPath, DiskEntry)>> {
     if jobs.is_empty() {
         return Ok(vec![]);
     }
-    let mut by_dir: BTreeMap<PathBuf, Vec<(&'p RelPath, PathBuf, Vec<u8>, bool)>> = BTreeMap::new();
+    let mut by_dir: BTreeMap<PathBuf, Vec<WriteJob<'p>>> = BTreeMap::new();
     for j in jobs {
         by_dir.entry(j.1.parent().expect("file has a parent").to_path_buf()).or_default().push(j);
     }
@@ -211,7 +214,7 @@ pub fn apply_tree(
     // Plain small blobs are written by a thread pool (open/write/fsync/rename dominate a big
     // checkout); links, transformed and big streamed files, and fault-injected runs stay inline.
     let mut written: BTreeMap<&RelPath, DiskEntry> = BTreeMap::new();
-    let mut wave: Vec<(&RelPath, PathBuf, Vec<u8>, bool)> = Vec::new();
+    let mut wave: Vec<WriteJob<'_>> = Vec::new();
     let mut wave_bytes = 0;
     for p in changed.iter().filter(|p| to.contains_key(**p)) {
         let entry = to[*p];
