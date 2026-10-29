@@ -3,6 +3,7 @@
 pub mod checkout;
 pub mod config;
 pub mod filter;
+pub mod gitstate;
 pub mod platform;
 pub mod store;
 pub mod serde_oid;
