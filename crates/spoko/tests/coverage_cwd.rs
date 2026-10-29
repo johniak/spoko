@@ -1,4 +1,5 @@
 //! Changes the process working directory, so it lives alone in its own test binary.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 #[cfg(unix)]
 #[test]

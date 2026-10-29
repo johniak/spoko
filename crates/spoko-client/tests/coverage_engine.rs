@@ -1,5 +1,6 @@
 //! Engine paths the scenario tests in `sync.rs` do not reach: races during apply, server
 //! faults (injected with SQLite triggers on the test server), git state merges, platform skips.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 mod support;
 

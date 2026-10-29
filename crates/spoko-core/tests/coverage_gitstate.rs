@@ -1,3 +1,4 @@
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 mod support;
 
 use std::collections::BTreeMap;

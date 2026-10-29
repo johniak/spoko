@@ -1,5 +1,6 @@
 //! Daemon paths the end-to-end tests do not reach: the project worker driven directly, project
 //! messages and volume prompts through a running daemon, the IPC server and the debounce loop.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 mod support;
 

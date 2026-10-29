@@ -1,4 +1,5 @@
 //! Docker volume sync as the daemon and the CLI drive it, against the in-memory Docker.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

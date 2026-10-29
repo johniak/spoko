@@ -1,4 +1,5 @@
 //! History, restore, merge-tool and watch-hook paths not reached by `resolve.rs` and `hooks.rs`.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 mod support;
 

@@ -1,4 +1,5 @@
 //! `spoko` commands run in this process (`commands::run`), with and without a daemon.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

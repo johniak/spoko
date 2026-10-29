@@ -1,4 +1,5 @@
 //! Failure paths of the HTTP client, the event stream and the account operations.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 use std::net::TcpListener;
 use std::time::Duration;

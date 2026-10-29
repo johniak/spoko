@@ -1,5 +1,6 @@
 //! Edge cases of the encrypted object transfer: codec framing, the known set, malformed
 //! objects, tampered server data, batch splitting and server failures.
+#![cfg_attr(windows, allow(unused_imports, dead_code))] // helpers of #[cfg(unix)] tests
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
