@@ -197,10 +197,14 @@ fn known_set_file_is_created_on_insert_and_removed_on_clear() {
 #[test]
 fn known_set_reports_unreadable_and_unwritable_files() {
     let d = tempfile::tempdir().unwrap();
-    let file = d.path().join("plain-file");
-    std::fs::write(&file, b"x").unwrap();
-    let err = KnownSet::load(&file.join("known.bin")).unwrap_err();
-    assert_ne!(err.kind(), std::io::ErrorKind::NotFound);
+    // reading through a file as if it were a directory: ENOTDIR on Unix (Windows says NotFound)
+    #[cfg(unix)]
+    {
+        let file = d.path().join("plain-file");
+        std::fs::write(&file, b"x").unwrap();
+        let err = KnownSet::load(&file.join("known.bin")).unwrap_err();
+        assert_ne!(err.kind(), std::io::ErrorKind::NotFound);
+    }
 
     // the directory for the file cannot be created once a file took its name
     let path = d.path().join("later/known.bin");
