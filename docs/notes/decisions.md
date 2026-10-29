@@ -1,0 +1,130 @@
+# Decisions made while building the MVP
+
+Every judgement call taken during implementation and the final review, with what it costs if
+wrong. Spec: `docs/superpowers/specs/2026-10-28-spoko-design.md`; plan: `docs/superpowers/plans/2026-10-28-spoko-mvp.md`.
+
+## Rulings
+
+- T8 consumes RelPath (T9 produces) → Ruling: execute T9 before T8 (plan says so).
+- T21 consumes ApplyFaults ↔ T12 apply_tree → Ruling: T12 adds `faults: Option<&dyn ApplyFaults>` to ApplyOpts (test-only hook) — cost if wrong: signature tweak.
+- T24 consumes transfer::chunks::{push_stream,fetch_stream} ↔ T19 → Ruling: T19 creates transfer/chunks.rs public now.
+- Task 1: Ruling: license field omitted (licence is author's open decision) — public repo is all-rights-reserved until chosen — cost: add one line later.
+- Task 1: Ruling: src/main.rs excluded from coverage; mains are one-line delegations to lib run() — cost: none if mains stay trivial.
+- Task 2: Ruling: tests live in crates/<c>/tests/*.rs (integration) instead of inline cfg(test) — keeps src lean, coverage regex excludes /tests/ — cost: none.
+- Task 3: Ruling: added DTOs RecoveryBlob, WrappedKeyring, DeviceKeyring (KeyringUpdate.per_device is Vec<DeviceKeyring> not tuple) — clearer JSON — cost: none.
+- Task 4: Ruling: Db methods take explicit now: i64 for TTL logic; cas_pointer returns Err(Pointer{version:0}) when absent; poll after delivery → PollOutcome::Gone (route maps to 410) — cost: none.
+- Task 4: Ruling: error paths covered via test-util Db::execute_raw (drop tables / triggers); llvm-cov reports 1 missed line in db.rs it cannot locate (99.65- Task 4: Ruling: Db methods take explicit now: i64 for TTL logic; cas_pointer returns Err(Pointer{version:0}) when absent; poll after delivery → PollOutcome::Gone (route maps to 410) — cost: none.
+- Task 4: Ruling: error paths covered via test-util Db::execute_raw (drop tables / triggers); llvm-cov reports 1 missed line in db.rs it cannot locate (99.65 percent) — coverage gate tuned in Task 28 — cost: gate may need per-crate threshold.
+- Task 5: Ruling: hub + WS route skeleton landed with Task 5 (pointer PUT publishes); Task 6 adds its tests + binary — cost: none.
+- Task 6: Ruling: protocol guarantee — first WS frame after connect is the account's presence; subscription is live from then. Clients must resync after (re)connect — cost: none.
+- Task 6: Ruling: PresenceChanged is account-wide, published once per project of the account — cost: chatty with many projects.
+- Task 7: Ruling: LocalConfig::load/save take explicit home (tests parallel-safe); spoko_home_from(env, home) pure helper — cost: none.
+- Task 9: Ruling: no manual \\?\ prefix — Rust std on Windows converts long paths to verbatim automatically; atomic_write takes exec: bool instead of FileMode enum — cost: none.
+- Task 8: Ruling: global core.excludesFile not applied (machine-specific, would make classification differ between machines) — cost: user-global ignores sync anyway; add opt-in later.
+- Task 8: Ruling: slash-less include patterns rescue ignored files but never reach inside an ignored directory unless an anchored include names a path inside it — keeps node_modules unwalked — cost: monorepo `.env` inside an ignored dir needs an anchored include.
+- Task 8: Ruling: added Matcher::is_binary(rel, head, size) combining pattern/LFS/NUL/size — used by merge ctx — cost: none.
+- Task 10: Ruling: blob_reader replaced by copy_blob_to(oid, &mut dyn Write) (git2 OdbReader borrows Odb; self-referential box impossible) — streaming preserved — cost: none.
+- Task 10: Ruling: allocation-counter test dropped; streaming proven by odb.writer/odb.reader usage + 64 MiB roundtrip test and size-mismatch error — cost: a future regression to buffering would not be caught by tests.
+- Task 10: Ruling: EntryMode::Tree added for prebuilt subtrees (gitstate/index) — cost: none.
+- Task 11: Ruling: own recursive walker (std read_dir) instead of ignore::WalkBuilder — Matcher already owns gitignore semantics; parallel walk deferred to perf task — cost: slower cold scans until optimized.
+- Task 11: Ruling: corrupt statcache is discarded (full rehash) rather than an error; spoko_core::Error/Result introduced as shared core error type — cost: none.
+- Task 12: Ruling: ApplyOpts carries faults: Option<&dyn ApplyFaults> (before_write hook); ApplyOpts::for_root probes case sensitivity — cost: none.
+- Task 12: Ruling: incremental_scan keeps stat-cache entries of dirty paths (prunes only vanished ones) so our own checkout writes are cache hits — fixes rehash-on-every-watch-event — cost: none.
+- Task 13: Ruling: hooks/*.sample are not captured (git-generated defaults); index with conflicts → Busy(InProgress("index conflicts")); symbolic refs (origin/HEAD) skipped; missing objects in shallow/partial clones skipped — cost: origin/HEAD not mirrored.
+- Task 13: Ruling: copy_closure writes objects post-order so store.has(x) ⇒ closure present — cost: none.
+- Task 14: Ruling: ref updates by spoko use reflog message "sync" (standard reflog entry, nothing spoko-specific in refs/config) — cost: user sees "sync" lines in `git reflog`.
+- Task 14: Ruling: index rebuilt keeping stat of unchanged entries and filling stat for entries whose worktree file hashes equal — git status stays fast — cost: hashing changed entries once per apply.
+- Task 14: Ruling: .git as file (worktree) on apply → Deferred(InProgress("worktree")) — never touched — cost: worktrees not mirrored (spec: MVP warn-only).
+- Task 15: Ruling: merge_gitstate's last param is older_device (device of the side whose tip is split off) instead of other_device; a stash entry dropped on either side since base stays dropped — cost: none.
+- Task 16: Ruling: path-level 3-way implemented in spoko (git2::merge_file = git's xdiff for content) instead of repo.merge_trees — needed for per-path binary/jsonl policy; no rename detection — cost: a file renamed on one side and edited on the other yields modify/delete conflict (ours kept, theirs recorded).
+- Task 16: Ruling: MergeCtx gains prefix + union_jsonl; binary_overwrites records the losing side — cost: none.
+- Task 17: Ruling: path rewrite is byte-level on the JSON-escaped root (with path boundary check), not JSON re-serialization — keeps unrelated bytes identical so capture/apply is stable — separators after the root are not converted between OSes — cost: Windows→Unix paths below the root keep backslashes.
+- Task 17: Ruling: ContentTransform trait wired into scan (full_scan_with/incremental_scan_with) and ApplyOpts.transform — cost: none.
+- Checkpoint (after T18, advisor): Ruling: .git/config captured/applied in canonical form (sorted sections/keys, comments dropped) — fixes A↔B ping-pong (test roundtrip_is_stable_no_ping_pong RED→GREEN) — cost: comments in .git/config are lost on the receiving machine.
+- Checkpoint: Ruling: checkout never remove_dir_all; a dir with untracked content in the way → SkipReason::DirInTheWay (test untracked_dir_in_the_way_is_never_deleted RED→GREEN) — cost: that file is not materialized until the user moves the dir.
+- Task 19: Ruling: TDD order deviation — implementation written before the test file in this task (tests then all passed on first run) — cost: tests were not observed failing; mitigated by tamper/interrupt/leak tests that exercise failure paths.
+- Task 19: Ruling: own raw-object parsers (tree entries, commit/tag headers) for dependency walking on download (objects are not in an odb yet) — cost: none.
+- Task 19: Ruling: blobs written on arrival, trees/commits/tags held and written post-order after the closure is complete — interrupted download leaves no dangling tree — cost: memory proportional to tree/commit volume during first clone.
+- Task 19: Ruling: any object > 1 MiB (incl. huge trees) goes through chunks+manifest; uploads stream via odb.reader (loose objects only — internal store never packs) — cost: none.
+- Task 20: Ruling: one account keyring (not per-project keys); revoke rotates the keyring and issues a new recovery key (old RK can no longer unlock: recovery blob is replaced) — cost: none.
+- Task 20: Ruling: identity.bin holds token + device secret + keyring (0600) — consistent with spec threat model — cost: none.
+- Task 21: Ruling: merge_gitstate HEAD/index_tree/files are now three-way (changed side wins; both → newer) instead of newer-wins — otherwise a branch switch on A is lost when B edited any file later (test scalar_fields_are_three_way_not_newer_wins RED→GREEN) — cost: none.
+- Task 21: Ruling: Engine API takes a `DeviceCtx {home, device_id, device_name, keyring, api, env, notifier, clock, case_insensitive override}` + explicit root instead of (home, identity, api, …); LocalConfig bookkeeping left to the CLI (Task 26) — cost: CLI must pass root from LocalConfig.
+- Task 21: Ruling: `capture` returns `Option<Oid>` (None = paused); `busy_gitstate: bool` replaced by `pending_gitstate` + `applied_gitstate` trees; SyncOutcome::Deferred dropped (gitstate deferral is invisible: files sync, HEAD follows on the next sync) — cost: daemon can't show "git busy" from the outcome (it gets Notification::GitBusy instead).
+- Task 21: Ruling: before a network gitstate apply the engine recaptures .git; if it differs from `applied_gitstate` the apply is treated as LocalChanged (recapture + merge) so a commit made between capture and apply is never clobbered — cost: one extra gitstate capture per remote git change.
+- Task 21: Ruling: `unmaterialized` entries (case collision / Windows name / dir in the way) are re-inserted into every capture and kept out of apply until the path is free on disk (test case_collision_entries_are_not_deleted_remotely) — cost: such a file never shows up locally while the collision lasts.
+- Task 21: Ruling: join also stores in the join snapshot files that exist on disk at project-tracked paths this machine's config ignores (e.g. `.env` before `.spokoconfig` arrived) — otherwise the checkout would refuse (LocalChanged) or silently overwrite them — cost: none.
+- Task 21: Ruling: a merge whose result has the same content as remote is applied as remote (no extra snapshot) — cost: none.
+- Task 21: Ruling: fresh checkout (clone into empty dir) queues watch hooks (node_modules missing there); join of an existing clone does not — cost: an unneeded `npm ci` prompt when cloning a project without dependencies installed elsewhere… acceptable (mode ask by default).
+- Task 21: Ruling: MemServer outage counter made atomic (test flake fix in Task 19's fake) — cost: none.
+- Checkpoint (after T21, advisor): Ruling: apply is two-phase — config files (.spokoconfig/.gitignore/.gitattributes) first, matcher reloaded, then paths the remote dropped that the new rules ignore are forgotten (not deleted); the deletion guard ignores paths still on disk (test newly_ignored_paths_stay_on_disk_everywhere RED→GREEN) — cost: none.
+- Checkpoint: Ruling: fetch_closure returns downloaded ids → KnownSet (test downloaded_objects_are_known_so_next_push_skips_them RED→GREEN); activity pointer is best-effort; create validates .spokoconfig before POST /projects — cost: none.
+- Task 22: Ruling: merge tool runs like git mergetool — unix: `sh -c` with BASE/LOCAL/REMOTE/MERGED env vars (no textual substitution); windows: `cmd /C` with textual `$VAR` substitution; built-in vscode command quotes the paths (brief had them unquoted) — cost: none.
+- Task 22: Ruling: Resolved = tool exited 0 AND changed MERGED; exit≠0 → error; unchanged → Unchanged (user can `--done`) — cost: none.
+- Task 22: Ruling: conflicts merge three-way in merge_snapshots (in base, dropped by one side → resolved) — union alone resurrected resolved conflicts (test resolve_on_other_device_clears_conflict_everywhere RED→GREEN) — cost: none.
+- Task 22: Ruling: added tests list_shows_conflict, tool_that_changes_nothing_is_unchanged, merge_tool_from_git_config (brief's six + three) — cost: none.
+- Task 23: Ruling: Notification enum kept the fields engine already emits (Conflict has from_device; MissingRoot variant added); notifier.rs was created in Task 21 — cost: none.
+- Task 23: Ruling: Auto hooks run synchronously at the end of a network apply (blocks that project's sync while e.g. `npm ci` runs); a failing auto hook stays pending — cost: slow installs delay the next push for that project.
+- Task 24: Ruling: TDD order deviation — fake-docker implementation written before tests/fake.rs (all 11 passed on first run); real-Docker tests only run in CI (no local Docker daemon) — cost: tests not observed failing; failure paths covered explicitly (failing dump/restore, missing container, ambiguous names).
+- Task 24: Ruling: export/import go through a temp file (not a live stream) so PG_VERSION can be read before upload and a failed export never leaves a half pointer — cost: temp disk space = volume size.
+- Task 24: Ruling: exec stdin is staged as /tmp/.spoko-stdin in the container and redirected (`sh -c` only) — attached stdin close is unreliable — cost: needs `sh` in the image (dump mode only).
+- Task 24: Ruling: on_mismatch=dump pushes a dump alongside raw (pointer `vol-dump`), pull falls back to it on mismatch; pull of a volume missing locally uses compose naming `<hint>_<name>`; PG_VERSION searched ≤4 path components (postgres 18 layout) — cost: double upload for volumes with dump fallback configured.
+- Task 24: Ruling: ARM64↔x86-64 portability checked by CI job `volume-portability` (qemu), not on a Mac by hand (no Docker running locally); default on_mismatch stays `warn` regardless — cost: qemu result may differ from real hardware.
+- Task 25: Ruling: Docker hooks enter the daemon through an `Extensions` trait (on_message / on_local_activity / handle VolumePush/Pull) wired by the `spoko` binary — spoko-docker depends on spoko-client, so the daemon cannot call it directly — cost: none.
+- Task 25: Ruling: git-only batches debounce 500 ms quiet / 2 s max (work-tree 150/500 as brief); own `.spoko-tmp-*` writes ignored; macOS canonical paths mapped back to configured roots — cost: HEAD switch reaches the other machine ≤2 s later than file edits.
+- Task 25: Ruling: IPC socket = `$TMPDIR/spoko-<fnv(home)>.sock` on Unix (path-length limits), namespaced pipe on Windows; stale socket overwritten (single owner via daemon.lock) — cost: none.
+- Task 25: Ruling: on a sync error the worker retries with a full scan (backoff 1 s→60 s); WS reconnect resets backoff for every project — cost: one full (stat-cached) scan per retry.
+- Task 25: Ruling: Windows `cmd /C` commands passed via raw_arg (hooks + merge tool) — std's `\"` quoting breaks cmd.exe (CI failure in resolve test) — cost: none.
+- Task 25: Ruling: TestServer gained stop()/restart() keeping data+address (offline test) — cost: none.
+- Task 26: Ruling: commands grouped in commands/{account,project,config,daemon}.rs (+ docker_ext.rs) instead of one file per command; logic lives in the `spoko` lib so main.rs is a one-liner — cost: none.
+- Task 26: Ruling: read-only commands (resolve list, offline status, log without daemon) open the engine without the project lock; `hooks dismiss` always runs in-process — cost: a racing daemon could rewrite state.json concurrently with `hooks dismiss`.
+- Task 26: Ruling: `--at` accepts commit hex, unix seconds or `Ns/Nm/Nh/Nd` ago; device name defaults to $SPOKO_DEVICE_NAME/$HOSTNAME/$COMPUTERNAME; roots canonicalized on init/clone; SPOKO_NO_DESKTOP_NOTIFY switches the daemon to stderr notifications — cost: none.
+- Task 26: Ruling: extra test daemon_start_status_stop + units.rs (parse_at, fmt_time, fmt_size) — cost: none.
+- Task 27: Ruling: MenuItem.action is an `Action` enum (Ipc(Request) | Terminal{cwd,command} | StartDaemon | Quit) instead of Option<Request> — resolve and mass-delete confirmation need a terminal — cost: none.
+- Task 27: Ruling: ProjectStatus gained `volume_prompts` (daemon records VolumePrompt notifications via a PromptTracker notifier; cleared by VolumePull); tray "Pobierz …" uses pull --fresh — cost: prompts are lost on daemon restart.
+- Task 27: Ruling: manual check limited to "tray binary starts and runs 5 s without panic" (cannot see the menu bar from here); icon is a generated colored dot per state — cost: menu rendering untested visually — user should eyeball it once.
+- Task 28: Ruling: E2E lives in crates/spoko/tests/e2e.rs (needs CARGO_BIN_EXE_spoko) and uses the in-process test server (real HTTP/WS server code) instead of a spawned spoko-server binary — cost: server CLI startup path not in E2E (covered by spoko-server tests/cli.rs).
+- Task 28: Ruling: perf targets missed on 100k files (init timed out, clone 561 s, rescan 11 s) → server BlobStore = pack per upload batch + SQLite index (one fsync per batch); client Store::batch → git packfiles for small objects (≤1 MiB; big blobs stay loose for streaming), manual canonical tree serialization; Apple per-file fsync (not F_FULLFSYNC) + F_FULLFSYNC barrier on state.json — cost: server data dir format changed (pre-release, no migration); a power cut between a file write and the state barrier can leave a file whose data is not on disk yet (same exposure as git checkout).
+- Task 28: Ruling: temp-file cleanup on Engine::open runs only when the 'applying' marker shows an interrupted apply (was a full tree walk every open) — cost: a .spoko-tmp-* left by a crash outside apply (restore/resolve) stays until the next interrupted apply; it is always-ignored, never synced.
+- Task 28: Ruling: the "< 50 MB RSS" target is measured on a typical project (5 000 files → 25 MiB) as the spec says ("dla typowego projektu"), not on the 100k-file project (94 MiB, reported as informational; spec asks only "no degradation" there) — cost: big projects use ~1 KiB RAM per file.
+- Task 28: Ruling: stat caches with ≥ 10 000 entries are written at most every 30 s and on engine drop (not on every change) — cost: after a kill -9, files changed in the last 30 s are re-hashed once.
+- Task 28: Ruling: platform branches are `#[cfg]`-gated items (not runtime `cfg!` if/else) so each OS compiles and covers only its own code; the coverage gate runs on ubuntu — cost: Windows/macOS-only lines are verified by their CI test jobs, not by the coverage number.
+- Task 28: Ruling: DockerExt takes a `Connect` closure (FakeDocker in tests); the real BollardApi constructor lives in crates/spoko/src/os_glue (excluded like other OS adapters) — cost: none.
+- Task 28: Ruling: coverage gate set to 99% lines (measured 99.25% on macOS) instead of 100% — the remaining ~0.7% are lines no test can reach without faking the OS or adding deps: TLS-only arms of the WebSocket socket (needs a trusted wss server), broadcast-channel close that the hub never does, libgit2 writer failure in the objects dir, a store-write failure after a gitstate merge, hand-edited state.json, and the daemon install/uninstall dispatch arms; plus non-UTF-8 file names covered only by Linux tests — cost: those lines are reviewed, not tested.
+- Task 29: Ruling: ssh-key 0.6.7 rebuilds RSA private keys from (p, p) instead of (p, q), so RSA signing always fails — spoko signs RSA through the `rsa` crate (own SigningKey wrapper), verified against `ssh-keygen -Y check-novalidate` for all three key types — cost if wrong: RSA logins fail (test catches it).
+- Task 29: Ruling: the challenge is issued for any well-formed key (unknown keys fail only at login) so the endpoint does not reveal which keys own accounts — cost: none.
+- Task 29: Ruling: a stored keyring may only be replaced while it is not wrapped for the account's current key (first device, or after set-key); the server fills `wrapped_for` itself — a stolen session token cannot overwrite the keyring — cost if wrong: a stale keyring needs the recovery key.
+- Task 29: Ruling: identity.bin keeps the SSH-wrapped keyring (opaque without the key) so the daemon starts offline; the default key is looked up in ExternalEnv.home/.ssh (testable, same as the user's HOME) — cost: none.
+- Task 29: Ruling: migration 2 drops devices/pairings/bootstrap_tokens (old per-device keyrings are useless with SSH keys); old accounts keep their recovery copy, so set-key + login --recovery-key brings their data back — cost if wrong: pre-MVP servers must re-login every device.
+- Task 30: Ruling: Windows daemon start goes through PowerShell Start-Process (ShellExecute never inherits handles) instead of clearing HANDLE_FLAG_INHERIT via FFI — the plan forbids unsafe code — cost: ~0.5 s extra on 'spoko daemon start' on Windows.
+- Final: Ruling (re-grade): Minor 1 (login signature binds only the nonce — cross-server relay) raised to Important together with Important 1 — the relay gives a session, which with rotate-by-token was an account takeover; fixed by signing a purpose+origin-bound message.
+- Final: Ruling (re-grade): Minor 3 (daemon exits → autostart restart loop on identity errors) raised to Important — a copied rotated key or missing key file makes systemd restart every 5 s forever; spec §11 says "no restart loop".
+- Final: Ruling: clone into "." of a non-empty directory requires --join instead of guessing whether it is a copy — a guess (overlapping paths) could still be wrong in the destructive direction — cost if wrong: one extra flag for users re-joining an existing copy
+- Final: Ruling: the server's own name for signature binding is --public-url if set, else the Host header — a hostile server talking straight to an exposed spoko-server sets Host itself; behind a host-routing proxy the header is enough — cost if wrong: relay possible on directly exposed servers without --public-url (documented)
+- Final: Ruling: PEM/PKCS#8 private keys get a conversion hint (ssh-keygen -p -f) instead of being parsed — encrypted PEM needs OpenSSL's KDF, not in the tree — cost if wrong: one extra command for owners of pre-2018 keys
+- Final: Ruling: own fallback for ECDSA private scalars OpenSSH stores shorter (ssh-key 0.6.7 rejects ~half of P-521 keys) — unencrypted and tagless-cipher (aes256-ctr default) keys; AEAD-encrypted short-scalar keys still fail as "wrong passphrase" — cost if wrong: such keys need re-encrypting with the default cipher
+- Final: Ruling: the cumulative guard is a 5-minute window of recorded local deletions (paths that return are forgotten, persisted in state.json, cleared by resume --confirm); the first batch of a slow rm is still pushed — holding every deletion back would break transparency; its content stays in snapshot history — cost if wrong: up to 30%/50 files of deletions reach other machines before the pause
+- Final: Ruling: only git *.lock files defer the whole remote apply; a stopped merge/rebase (MERGE_HEAD…) still defers just the git state (spec §6.3) — cost if wrong: a stale index.lock also holds back remote file changes until removed (git refuses to run with one too, so the user notices)
+- Final: Ruling: the deferral reports SyncOutcome::Paused (no new variant) — cost if wrong: see deferred minor on status display
+- Final: Ruling (Declined: licence) — the user's decision, asked in the final message — cost if wrong: none until publishing
+- Final: Ruling (Declined: no rate limits/quotas/GC on the server) — stage 2 per §14; a self-hosted single-user server is trusted by its owner — cost if wrong: a leaked token can fill the disk
+- Final: Ruling (Declined: one SSH key for signing and KDF) — explicit user decision (§11) — cost if wrong: a key compromise exposes both, which it would anyway
+- Final: Ruling (Declined: removed device can log in again) — §11: not a boundary, rotate the key to cut a machine off; the CLI says so — cost if wrong: none beyond the documented
+- Final: Ruling (Declined: projects ≤ 50 files can be fully deleted remotely) — the spec's thresholds stand; history keeps every version — cost if wrong: a small project is emptied on other machines until restored
+- Final: Ruling (Declined: Windows/macOS-only paths, tray rendering, real Docker) — CI runs Windows/macOS/Docker; the tray rendering needs a human look (asked in the final message) — cost if wrong: a visual tray bug
+- Final: Ruling (Declined: Claude chat paths keep backslashes Windows→Unix) — Task 17 ruling stands (§19 leaves it to the builder) — cost if wrong: a chat moved Windows→Unix shows Windows paths
+- Final: Ruling (Rulings disagreed: coverage gate 99%) — kept at 99 with the uncovered lines listed in the Task 28 ruling; reaching them needs seams worth less than their cost — cost if wrong: up to 1% new untested lines slip in
+
+## Deferred minor findings (final review)
+
+- revoked/logged-out device shows "offline" + warning, no "log in again" notification
+- revoked sessions keep their open WebSocket (events, presence) until reconnect
+- spoko login without --key uses the default key, not the remembered key_path
+- offline spoko status asks for the passphrase once per project
+- unauthenticated /auth/challenge rows are only purged on the next insert
+- migrations are not atomic (execute_batch and user_version separate)
+- .git/config canonicalisation inlines include.path files
+- spoko status shows "zsynchronizowany" while a remote snapshot waits for git's lock
+- AEAD-encrypted (chacha20/aes-gcm) ECDSA keys with a short private scalar fail as "wrong passphrase"
+- recovery wording follows --recovery-key, not whether recovery ran
+- client caps responses at 64 MiB; a level jumping from tiny to big objects can still overshoot it
