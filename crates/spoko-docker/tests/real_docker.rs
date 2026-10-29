@@ -24,13 +24,13 @@ fn docker(args: &[&str]) -> String {
 }
 
 fn psql(container: &str, sql: &str) -> String {
-    docker(&["exec", container, "psql", "-U", "postgres", "-tAc", sql])
+    docker(&["exec", container, "psql", "-h", "127.0.0.1", "-U", "postgres", "-tAc", sql])
 }
 
 fn wait_ready(container: &str) {
     let deadline = Instant::now() + Duration::from_secs(90);
     while Instant::now() < deadline {
-        let ok = Command::new("docker").args(["exec", container, "psql", "-U", "postgres", "-tAc", "select 1"]).output().is_ok_and(|o| o.status.success());
+        let ok = Command::new("docker").args(["exec", container, "psql", "-h", "127.0.0.1", "-U", "postgres", "-tAc", "select 1"]).output().is_ok_and(|o| o.status.success());
         if ok {
             return;
         }
@@ -57,7 +57,7 @@ fn pg_container(name: &str, volume: &str, start: bool) {
     if start {
         args.push("-d");
     }
-    args.extend(["--name", name, "-e", "POSTGRES_PASSWORD=x", "-v", &mount, "postgres:16"]);
+    args.extend(["--name", name, "-e", "POSTGRES_PASSWORD=x", "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-v", &mount, "postgres:16"]);
     docker(&args);
 }
 
