@@ -5,8 +5,12 @@ use std::path::Path;
 use spoko_core::config::ProjectConfig;
 use spoko_core::filter::Matcher;
 use spoko_core::platform::RelPath;
-use spoko_core::scan::{ScanProblem, StatCache, full_scan, incremental_scan};
-use spoko_core::store::{EntryMode, Store, WorkMap};
+#[cfg(unix)]
+use spoko_core::scan::ScanProblem;
+use spoko_core::scan::{StatCache, full_scan, incremental_scan};
+#[cfg(unix)]
+use spoko_core::store::EntryMode;
+use spoko_core::store::{Store, WorkMap};
 
 struct Env {
     dir: tempfile::TempDir,
