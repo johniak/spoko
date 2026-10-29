@@ -47,9 +47,12 @@ have accounts.
 
 **Passphrases.** A key without a passphrase: the daemon starts without asking. A key with one:
 the daemon starts locked (status and tray show it, nothing syncs) until `spoko unlock` sends
-the passphrase over the local socket (owner-only, mode 0600; on Windows the pipe accepts
-writes only from its creator). The decrypted key lives only in the daemon's memory. CLI
-commands that run without the daemon ask for the passphrase themselves.
+the passphrase over the local socket. On Unix the socket (0600) sits in its own directory
+(`$XDG_RUNTIME_DIR` or the temp dir, `spoko-<hash>/`, mode 0700); the daemon and every
+client refuse a directory that is not the `SPOKO_HOME` owner's or is open to others, so
+another local user cannot pose as the daemon. On Windows the pipe has a random name kept in
+`SPOKO_HOME`. The decrypted key lives only in the daemon's memory. CLI commands that run
+without the daemon ask for the passphrase themselves.
 
 **Integrity.** Every downloaded object is checked against its git hash; a tampered or
 substituted blob fails decryption or the hash check and the sync stops.

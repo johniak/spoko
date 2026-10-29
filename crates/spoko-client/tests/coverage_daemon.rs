@@ -230,13 +230,12 @@ fn conflict_is_resolved_through_worker_requests() {
         path: path.clone(),
         done: false,
     });
-    assert_eq!(
-        out,
-        Response::Text {
-            text: "unchanged".into()
-        }
+    // the merge tool needs the user's terminal: the CLI runs it, the worker only records it
+    assert!(
+        matches!(&out, Response::Error { message } if message.contains("spoko resolve")),
+        "{out:?}"
     );
-    assert!(b.text("f.txt").contains("<<<<<<<"), "{}", b.text("f.txt"));
+    assert!(!b.text("f.txt").contains("<<<<<<<"), "{}", b.text("f.txt"));
     assert_eq!(
         r.ask(Request::Resolve {
             project,

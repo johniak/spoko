@@ -43,7 +43,8 @@ fn stdout(o: &Output) -> String {
 #[test]
 fn daemon_start_reports_a_daemon_that_never_comes_up() {
     let m = Machine::new();
-    // not logged in: the spawned `spoko daemon run` exits right away
+    // SPOKO_HOME is a file: the spawned `spoko daemon run` exits right away
+    std::fs::write(m.p("spoko-home"), b"not a directory").unwrap();
     let o = m.cmd(&["daemon", "start"]).output().unwrap();
     assert_eq!(o.status.code(), Some(1));
     let err = String::from_utf8_lossy(&o.stderr);
