@@ -17,6 +17,8 @@ spoko-core = { version = "0.1.0", path = "../spoko-core" }
 spoko-crypto = { version = "0.1.0", path = "../spoko-crypto" }
 spoko-proto = { version = "0.1.0", path = "../spoko-proto" }
 thiserror = "2.0.21"
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
+ureq = { version = "3", features = ["json"] }
 uuid = { version = "1.29.0", features = ["v4", "serde"] }
 zstd = "0.14.3"
 
@@ -24,6 +26,7 @@ zstd = "0.14.3"
 rand = "0.8"
 tempfile = "3.27.0"
 spoko-client = { path = ".", features = ["test-util"] }
+spoko-server = { path = "../spoko-server", features = ["test-util"] }
 
 [features]
 test-util = []

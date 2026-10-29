@@ -1646,8 +1646,11 @@ dependencies = [
  "spoko-core",
  "spoko-crypto",
  "spoko-proto",
+ "spoko-server",
  "tempfile",
  "thiserror",
+ "tungstenite 0.30.0",
+ "ureq",
  "uuid",
  "zstd",
 ]
@@ -2029,8 +2032,11 @@ dependencies = [
  "httparse",
  "log",
  "rand 0.10.3",
+ "rustls",
+ "rustls-pki-types",
  "sha1 0.11.0",
  "thiserror",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -2087,7 +2093,7 @@ dependencies = [
  "serde_json",
  "ureq-proto",
  "utf8-zero",
- "webpki-roots",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]
@@ -2224,6 +2230,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "webpki-roots"
+version = "0.26.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521bc38abb08001b01866da9f51eb7c5d647a19260e00054a8c7fd5f9e57f7a9"
+dependencies = [
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

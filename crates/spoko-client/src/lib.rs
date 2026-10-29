@@ -1,8 +1,11 @@
 //! spoko client: transfer, sync engine, daemon.
 
+pub mod account;
+pub mod api;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 pub mod transfer;
+pub mod ws;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
@@ -16,6 +19,12 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("server: {0}")]
     Server(String),
+    #[error("unauthorized (device revoked or token invalid)")]
+    Unauthorized,
+    #[error("network: {0}")]
+    Network(String),
+    #[error("{0}")]
+    Other(String),
     #[error("integrity: {0}")]
     Integrity(String),
 }
