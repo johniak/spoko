@@ -93,7 +93,7 @@ fn disk_matches(root: &Path, cache: &StatCache, rel: &RelPath, expected: Option<
         DiskKind::Dir => return Ok(false),
         DiskKind::File if transform.is_some_and(|t| t.applies(rel)) => {
             let bytes = fs::read(rel.to_fs(root))?;
-            git2::Oid::hash_object(git2::ObjectType::Blob, &transform.expect("checked").from_disk(&bytes))
+            git2::Oid::hash_object(git2::ObjectType::Blob, &transform.expect("checked").disk_to_snapshot(&bytes))
         }
         DiskKind::Symlink(t) => git2::Oid::hash_object(git2::ObjectType::Blob, t.as_bytes()),
         DiskKind::File => git2::Oid::hash_file(git2::ObjectType::Blob, rel.to_fs(root)),
@@ -195,7 +195,7 @@ pub fn apply_tree(
             }
             disk
         } else if let Some(t) = opts.transform.filter(|t| t.applies(p)) {
-            let bytes = t.to_disk(&store.read_blob(entry.oid)?);
+            let bytes = t.snapshot_to_disk(&store.read_blob(entry.oid)?);
             platform::atomic_write(&abs, &mut bytes.as_slice(), entry.mode == EntryMode::BlobExec)?
         } else {
             platform::atomic_write_with(&abs, entry.mode == EntryMode::BlobExec, &mut |w| {

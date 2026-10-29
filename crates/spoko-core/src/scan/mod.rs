@@ -98,7 +98,7 @@ impl Scanner<'_> {
             _ if self.transform.is_some_and(|t| t.applies(rel)) => {
                 let bytes = fs::read(rel.to_fs(self.root))?;
                 let t = self.transform.expect("checked");
-                Entry { oid: self.store.write_blob(&t.from_disk(&bytes))?, mode: EntryMode::Blob }
+                Entry { oid: self.store.write_blob(&t.disk_to_snapshot(&bytes))?, mode: EntryMode::Blob }
             }
             _ => {
                 let mut f = fs::File::open(rel.to_fs(self.root))?;

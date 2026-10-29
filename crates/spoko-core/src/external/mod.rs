@@ -102,10 +102,10 @@ impl ContentTransform for PathRewrite {
     fn applies(&self, rel: &RelPath) -> bool {
         rel.as_str().ends_with(".jsonl")
     }
-    fn from_disk(&self, bytes: &[u8]) -> Vec<u8> {
+    fn disk_to_snapshot(&self, bytes: &[u8]) -> Vec<u8> {
         to_neutral(bytes, &self.root)
     }
-    fn to_disk(&self, bytes: &[u8]) -> Vec<u8> {
+    fn snapshot_to_disk(&self, bytes: &[u8]) -> Vec<u8> {
         to_local(bytes, &self.root)
     }
 }

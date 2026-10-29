@@ -105,12 +105,9 @@ fn stat_entry(root: &Path, path: &str, oid: Oid, mode: u32) -> IndexEntry {
     if !matches {
         return e;
     }
-    let secs = |t: std::io::Result<std::time::SystemTime>| {
-        t.ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(IndexTime::new(0, 0), |d| {
-            IndexTime::new(i32::try_from(d.as_secs()).unwrap_or(i32::MAX), d.subsec_nanos())
-        })
-    };
-    e.mtime = secs(meta.modified());
+    e.mtime = meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(IndexTime::new(0, 0), |d| {
+        IndexTime::new(i32::try_from(d.as_secs()).unwrap_or(i32::MAX), d.subsec_nanos())
+    });
     e.ctime = e.mtime;
     #[cfg(unix)]
     {
