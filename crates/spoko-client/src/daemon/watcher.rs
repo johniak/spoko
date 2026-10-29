@@ -148,7 +148,9 @@ impl Watcher {
     }
 }
 
-fn debounce_loop(roots: &[PathBuf], raw: &Receiver<notify::Result<notify::Event>>, out: &Sender<FsBatch>, stop: &AtomicBool) {
+/// Turns raw notify events into debounced batches until `stop`, or until either channel closes.
+/// Public so tests can feed it events the OS will not produce on demand (watcher errors).
+pub fn debounce_loop(roots: &[PathBuf], raw: &Receiver<notify::Result<notify::Event>>, out: &Sender<FsBatch>, stop: &AtomicBool) {
     let mut d = Debouncer::new(roots);
     while !stop.load(Ordering::SeqCst) {
         let wait = d.next_deadline().map_or(Duration::from_millis(200), |t| t.saturating_duration_since(Instant::now())).min(Duration::from_millis(200));

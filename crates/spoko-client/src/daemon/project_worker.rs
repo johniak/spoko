@@ -158,17 +158,19 @@ impl Worker {
         let mut st = self.status.lock().expect("status");
         st.conflicts = conflicts;
         st.pending_hooks = self.engine.state.pending_hooks.iter().filter_map(|h| self.engine.config().watch.get(*h)).filter_map(|w| crate::hooks::command_for(w, crate::hooks::Os::current())).map(str::to_owned).collect();
-        st.state = match (&self.engine.state.paused, err) {
+        // backing off = the last sync failed, even when this refresh follows an IPC request
+        let failed = err.is_some() || self.backoff.is_some();
+        st.state = match (&self.engine.state.paused, failed) {
             (Some(p), _) => SyncState::Paused(match p {
                 PauseReason::User => "paused".into(),
                 PauseReason::MassDelete { deleted, total } => format!("mass delete {deleted}/{total}"),
                 PauseReason::MissingRoot => "project directory missing".into(),
             }),
-            (None, Some(_)) => SyncState::Offline,
-            (None, None) if conflicts > 0 => SyncState::Conflict(conflicts),
-            (None, None) => SyncState::Synced,
+            (None, true) => SyncState::Offline,
+            (None, false) if conflicts > 0 => SyncState::Conflict(conflicts),
+            (None, false) => SyncState::Synced,
         };
-        if err.is_none() {
+        if !failed {
             st.last_sync = Some(self.engine.now());
             st.warnings.clear();
         }
