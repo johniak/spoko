@@ -6,7 +6,7 @@ pub mod config_merge;
 mod merge;
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use git2::Oid;
 use serde::{Deserialize, Serialize};
@@ -124,20 +124,37 @@ pub fn read_gitstate(store: &Store, tree: Oid) -> crate::Result<Option<GitState>
     }))
 }
 
-/// Lock files or an operation in progress mean git is busy: do not read or write `.git` now.
-pub fn busy(git_dir: &std::path::Path) -> std::io::Result<Option<BusyReason>> {
-    const MARKERS: &[&str] = &["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG"];
-    for m in MARKERS {
-        if git_dir.join(m).exists() {
-            return Ok(Some(BusyReason::InProgress(m)));
+/// A `*.lock` of the repository whose work tree is `root` (a linked worktree's `.git` file names
+/// its git dir): a git command is running right now and may be writing the work tree too.
+/// An operation stopped for the user (merge, rebase) is not a running command.
+pub fn git_locked(root: &Path) -> std::io::Result<Option<PathBuf>> {
+    let dot_git = root.join(".git");
+    let meta = match std::fs::metadata(&dot_git) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        m => m?,
+    };
+    let git_dir = if meta.is_dir() {
+        dot_git
+    } else {
+        match std::fs::read_to_string(&dot_git)?.strip_prefix("gitdir:") {
+            Some(d) => root.join(d.trim()),
+            None => return Ok(None),
         }
+    };
+    match find_lock(&git_dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        r => r,
     }
+}
+
+/// First `*.lock` directly in `git_dir` or anywhere under its `refs/`.
+fn find_lock(git_dir: &Path) -> std::io::Result<Option<PathBuf>> {
     let mut stack = vec![git_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for e in std::fs::read_dir(&dir)?.flatten() {
             let p = e.path();
             if p.extension().is_some_and(|x| x == "lock") {
-                return Ok(Some(BusyReason::Lock(p)));
+                return Ok(Some(p));
             }
             if e.file_type()?.is_dir() && (dir.as_path() != git_dir || e.file_name() == "refs") {
                 stack.push(p);
@@ -145,4 +162,15 @@ pub fn busy(git_dir: &std::path::Path) -> std::io::Result<Option<BusyReason>> {
         }
     }
     Ok(None)
+}
+
+/// Lock files or an operation in progress mean git is busy: do not read or write `.git` now.
+pub fn busy(git_dir: &Path) -> std::io::Result<Option<BusyReason>> {
+    const MARKERS: &[&str] = &["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "BISECT_LOG"];
+    for m in MARKERS {
+        if git_dir.join(m).exists() {
+            return Ok(Some(BusyReason::InProgress(m)));
+        }
+    }
+    Ok(find_lock(git_dir)?.map(BusyReason::Lock))
 }

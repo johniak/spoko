@@ -32,6 +32,11 @@ impl Engine {
             .read_head()?
             .ok_or_else(|| ClientError::Other("project has no snapshot yet".into()))?;
         e.fetch(remote)?;
+        if !empty && e.git_running()? {
+            return Err(ClientError::Other(
+                "git is running in the project directory; run it again when it is done".into(),
+            ));
+        }
         let mut report = JoinReport::default();
         if !empty {
             // a join that did not finish may have replaced files already: its snapshot has them

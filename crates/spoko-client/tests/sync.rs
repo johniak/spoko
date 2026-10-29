@@ -522,8 +522,12 @@ fn join_existing_clone_keeps_local_diffs_in_join_snapshot() {
     assert!(rb.find_reference("refs/heads/exp").is_ok());
 }
 
+fn head_of(root: &std::path::Path) -> String {
+    git2::Repository::open(root).unwrap().head().unwrap().name().unwrap().to_owned()
+}
+
 #[test]
-fn busy_git_defers_gitstate_but_syncs_files() {
+fn busy_git_defers_the_whole_remote_apply() {
     let mut w = World::new();
     let a = w.device("a");
     let b = w.device("b");
@@ -533,38 +537,66 @@ fn busy_git_defers_gitstate_but_syncs_files() {
     commit_all(&repo, "init");
     let mut ea = a.create();
     let (mut eb, _) = b.join(ea.project_id);
-    std::fs::write(b.root.join(".git/index.lock"), "").unwrap();
+    // the user's git on B is in the middle of something (checkout, commit, ...)
+    let lock = b.root.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    // B's own work still goes out
+    b.write("local.txt", "mine");
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Pushed);
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::FastForwarded);
+    assert_eq!(a.text("local.txt"), "mine");
     let head = repo.head().unwrap().peel_to_commit().unwrap();
     repo.branch("dzban", &head, false).unwrap();
     repo.set_head("refs/heads/dzban").unwrap();
     a.write("f.txt", "2");
-    ea.sync().unwrap();
-    eb.sync().unwrap();
+    a.write("new.txt", "from a");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    b.notes.take();
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Paused);
+    assert!(b.notes.take().contains(&Notification::GitBusy { project: eb.project_id }));
+    // nothing of A's change touched B's work tree or .git while git was busy
+    assert_eq!(b.text("f.txt"), "1");
+    assert!(b.read("new.txt").is_none());
+    assert_ne!(head_of(&b.root), "refs/heads/dzban");
+    // B keeps working meanwhile: captured, merged once git is free
+    b.write("local.txt", "mine 2");
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Paused);
+    assert!(!b.notes.take().contains(&Notification::GitBusy { project: eb.project_id }), "told once");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::UpToDate);
+    assert_eq!(head_of(&a.root), "refs/heads/dzban", "B's busy git did not revert A's switch");
+    std::fs::remove_file(&lock).unwrap();
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::Merged { conflicts: 0 });
+    assert_eq!((b.text("f.txt"), b.text("new.txt")), ("2".into(), "from a".into()));
+    assert_eq!(head_of(&b.root), "refs/heads/dzban");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::FastForwarded);
+    assert_eq!(a.text("local.txt"), "mine 2");
+}
+
+#[test]
+fn git_operation_in_progress_defers_only_the_git_state() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    std::fs::create_dir_all(&a.root).unwrap();
+    let repo = init_repo(&a.root);
+    a.write("f.txt", "1");
+    let c = commit_all(&repo, "init");
+    let mut ea = a.create();
+    let (mut eb, _) = b.join(ea.project_id);
+    // a merge stopped for the user (can last hours): files keep syncing
+    std::fs::write(b.root.join(".git/MERGE_HEAD"), format!("{c}\n")).unwrap();
+    let head = repo.head().unwrap().peel_to_commit().unwrap();
+    repo.branch("dzban", &head, false).unwrap();
+    repo.set_head("refs/heads/dzban").unwrap();
+    a.write("f.txt", "2");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::FastForwarded);
     assert_eq!(b.text("f.txt"), "2");
-    let rb = git2::Repository::open(&b.root).unwrap();
-    assert_ne!(rb.head().unwrap().name().unwrap(), "refs/heads/dzban");
-    // B's busy git must not revert A's branch switch on the server
-    ea.sync().unwrap();
-    assert_eq!(
-        git2::Repository::open(&a.root)
-            .unwrap()
-            .head()
-            .unwrap()
-            .name()
-            .unwrap(),
-        "refs/heads/dzban"
-    );
-    std::fs::remove_file(b.root.join(".git/index.lock")).unwrap();
-    eb.sync().unwrap();
-    assert_eq!(
-        git2::Repository::open(&b.root)
-            .unwrap()
-            .head()
-            .unwrap()
-            .name()
-            .unwrap(),
-        "refs/heads/dzban"
-    );
+    assert!(eb.state.pending_gitstate.is_some());
+    assert_ne!(head_of(&b.root), "refs/heads/dzban");
+    std::fs::remove_file(b.root.join(".git/MERGE_HEAD")).unwrap();
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::UpToDate);
+    assert_eq!(head_of(&b.root), "refs/heads/dzban");
 }
 
 #[test]

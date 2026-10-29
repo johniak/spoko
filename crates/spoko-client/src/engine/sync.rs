@@ -175,6 +175,12 @@ impl Engine {
             }
             let (remote, version) = remote.expect("checked");
             self.fetch(remote)?;
+            // nothing is lost: the local snapshot is stored and merged when git is done
+            if self.git_running()? {
+                return Ok(merged.map_or(SyncOutcome::Paused, |conflicts| {
+                    SyncOutcome::Merged { conflicts }
+                }));
+            }
             if Some(local) == self.state.base {
                 match self.apply_snapshot(remote, false)? {
                     Applied::LocalChanged => {

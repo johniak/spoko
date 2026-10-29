@@ -2,7 +2,7 @@ mod support;
 
 use std::fs;
 
-use spoko_core::gitstate::{BusyReason, CaptureOutcome, Head, capture, gitstate_tree, read_gitstate};
+use spoko_core::gitstate::{BusyReason, CaptureOutcome, Head, capture, git_locked, gitstate_tree, read_gitstate};
 use spoko_core::store::Store;
 use support::*;
 
@@ -106,6 +106,38 @@ fn busy_on_index_lock() {
     fs::remove_file(root.join(".git/index.lock")).unwrap();
     fs::write(root.join(".git/refs/heads/x.lock"), "").unwrap();
     assert!(matches!(capture(&root, &store).unwrap(), CaptureOutcome::Busy(BusyReason::Lock(_))));
+}
+
+#[test]
+fn git_lock_is_found_in_the_repo_and_in_a_linked_worktree() {
+    let (d, root, _store) = env();
+    assert_eq!(git_locked(&root).unwrap(), None, "no repository");
+    init_repo(&root);
+    assert_eq!(git_locked(&root).unwrap(), None);
+    // an operation stopped for the user is not a running command
+    fs::write(root.join(".git/MERGE_HEAD"), "x").unwrap();
+    assert_eq!(git_locked(&root).unwrap(), None);
+    fs::write(root.join(".git/index.lock"), "").unwrap();
+    assert_eq!(git_locked(&root).unwrap(), Some(root.join(".git/index.lock")));
+    fs::remove_file(root.join(".git/index.lock")).unwrap();
+    fs::write(root.join(".git/refs/heads/x.lock"), "").unwrap();
+    assert_eq!(git_locked(&root).unwrap(), Some(root.join(".git/refs/heads/x.lock")));
+    // a linked worktree: `.git` is a file naming the worktree's git dir
+    let wt = d.path().join("wt");
+    let wt_git = root.join(".git/worktrees/wt");
+    fs::create_dir_all(&wt_git).unwrap();
+    fs::create_dir(&wt).unwrap();
+    fs::write(wt.join(".git"), format!("gitdir: {}\n", wt_git.display())).unwrap();
+    assert_eq!(git_locked(&wt).unwrap(), None);
+    fs::write(wt_git.join("index.lock"), "").unwrap();
+    assert_eq!(git_locked(&wt).unwrap(), Some(wt_git.join("index.lock")));
+    fs::write(wt.join(".git"), "gitdir: ../p/.git/worktrees/wt\n").unwrap();
+    assert_eq!(git_locked(&wt).unwrap(), Some(wt.join("../p/.git/worktrees/wt").join("index.lock")));
+    // a dangling or unreadable pointer is no lock
+    fs::write(wt.join(".git"), "gitdir: ../gone\n").unwrap();
+    assert_eq!(git_locked(&wt).unwrap(), None);
+    fs::write(wt.join(".git"), "not a pointer").unwrap();
+    assert_eq!(git_locked(&wt).unwrap(), None);
 }
 
 #[test]

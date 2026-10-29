@@ -127,6 +127,8 @@ pub struct Engine {
     /// When `statcache.bin` was last written; big caches are written at most every
     /// [`STATCACHE_SAVE_EVERY`] and when the engine is dropped.
     statcache_saved: Option<std::time::Instant>,
+    /// A remote snapshot waits for the user's git; notified once until it is free again.
+    git_waiting: bool,
 }
 
 /// Stat caches with fewer entries are written on every save.
@@ -179,6 +181,7 @@ impl Engine {
             case_insensitive,
             fresh_hooks: Vec::new(),
             statcache_saved: None,
+            git_waiting: false,
         };
         for x in &e.externals {
             e.ext_caches.insert(
@@ -497,6 +500,18 @@ impl Engine {
             CaptureOutcome::NoRepo => Ok(None),
             CaptureOutcome::Busy(_) | CaptureOutcome::Unsupported(_) => Ok(prev),
         }
+    }
+
+    /// Whether the user's git is running a command (it holds a `*.lock`). A checkout or reset
+    /// writes the work tree too, so a remote snapshot is not applied meanwhile; it is retried
+    /// on the next sync (the lock's removal is a `.git` change the watcher reports).
+    fn git_running(&mut self) -> Result<bool> {
+        let running = gitstate::git_locked(&self.root)?.is_some();
+        if running && !self.git_waiting {
+            self.notify(Notification::GitBusy { project: self.project_id });
+        }
+        self.git_waiting = running;
+        Ok(running)
     }
 
     fn git_hook(&self) {

@@ -547,13 +547,14 @@ fn older_local_branch_merges_with_a_newer_remote_branch() {
 #[test]
 fn deferred_git_state_merges_with_local_git_changes() {
     let (_w, a, b, mut ea, mut eb) = with_git();
-    std::fs::write(b.root.join(".git/index.lock"), "").unwrap();
     let repo = git2::Repository::open(&a.root).unwrap();
     let head = repo.head().unwrap().peel_to_commit().unwrap();
     repo.branch("dzban", &head, false).unwrap();
     repo.set_head("refs/heads/dzban").unwrap();
     a.write("f.txt", "changed\n");
     ea.sync().unwrap();
+    // git starts on B right after the files were written
+    eb.before_git = Some(lock_git_on_call(&b.root, 1));
     assert_eq!(eb.sync().unwrap(), SyncOutcome::FastForwarded);
     assert!(eb.state.pending_gitstate.is_some());
     assert!(
@@ -562,6 +563,7 @@ fn deferred_git_state_merges_with_local_git_changes() {
             .contains(&Notification::GitBusy { project: eb.project_id })
     );
     // git is free again, and B made a branch of its own meanwhile
+    eb.before_git = None;
     std::fs::remove_file(b.root.join(".git/index.lock")).unwrap();
     branch_here(&b.root, "mine");
     assert_eq!(eb.sync().unwrap(), SyncOutcome::Pushed);
@@ -599,8 +601,8 @@ fn git_state_in_an_unknown_format_is_kept_from_the_newer_side() {
     branch_here(&a.root, "from-a");
     assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
     // B's last snapshot carries a gitstate section this version cannot read (e.g. written by
-    // a newer spoko); git is busy on B, so B's capture keeps that section as it is
-    std::fs::write(b.root.join(".git/index.lock"), "").unwrap();
+    // a newer spoko); a merge is in progress on B, so B's capture keeps that section as it is
+    std::fs::write(b.root.join(".git/MERGE_HEAD"), "").unwrap();
     let last = eb.state.last_local.unwrap();
     let mut parts = read_snapshot(&eb.store, last).unwrap();
     let mut unknown = WorkMap::default();
@@ -668,7 +670,7 @@ fn git_taken_busy_before_a_deferred_apply_does_not_revert_the_remote_git_state()
     let (_w, a, b, mut ea, mut eb) = with_git();
     switch_on_a(&a, &mut ea);
     let lock = b.root.join(".git/index.lock");
-    std::fs::write(&lock, "").unwrap();
+    eb.before_git = Some(lock_git_on_call(&b.root, 1));
     assert_eq!(eb.sync().unwrap(), SyncOutcome::FastForwarded);
     assert!(eb.state.pending_gitstate.is_some());
     // git is free when B's capture checks it, and busy again when it applies the deferred state
@@ -935,6 +937,28 @@ fn joining_a_project_without_a_snapshot_fails() {
         panic!("joined a project with nothing in it");
     };
     assert_eq!(e.to_string(), "project has no snapshot yet");
+}
+
+#[test]
+fn join_while_git_runs_in_the_clone_asks_to_run_again() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    a.write("f.txt", "project\n");
+    let ea = a.create();
+    std::fs::create_dir_all(&b.root).unwrap();
+    init_repo(&b.root);
+    b.write("f.txt", "mine\n");
+    std::fs::write(b.root.join(".git/index.lock"), "").unwrap();
+    let Err(e) = Engine::clone_into(b.ctx.clone(), ea.project_id, &b.root) else {
+        panic!("joined while git was writing the work tree");
+    };
+    assert_eq!(e.to_string(), "git is running in the project directory; run it again when it is done");
+    assert_eq!(b.text("f.txt"), "mine\n");
+    std::fs::remove_file(b.root.join(".git/index.lock")).unwrap();
+    let (_eb, rep) = b.join(ea.project_id);
+    assert_eq!(b.text("f.txt"), "project\n");
+    assert!(rep.differing.contains(&RelPath::new("f.txt")), "{:?}", rep.differing);
 }
 
 #[cfg(unix)]
