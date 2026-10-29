@@ -4,7 +4,9 @@ pub mod account;
 pub mod api;
 pub mod engine;
 pub mod history;
+pub mod hooks;
 pub mod notifier;
+pub mod os_glue;
 pub mod resolve;
 #[cfg(feature = "test-util")]
 pub mod test_util;

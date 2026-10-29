@@ -116,6 +116,8 @@ pub struct Engine {
     ext_work: BTreeMap<String, WorkMap>,
     known: KnownSet,
     case_insensitive: bool,
+    /// Watch hooks touched by the apply in progress.
+    fresh_hooks: Vec<usize>,
 }
 
 impl Engine {
@@ -152,6 +154,7 @@ impl Engine {
             ext_work: BTreeMap::new(),
             known,
             case_insensitive,
+            fresh_hooks: Vec::new(),
         };
         for x in &e.externals {
             e.ext_caches.insert(
@@ -210,10 +213,6 @@ impl Engine {
             c.save(&self.dir.join(format!("ext-{name}.cache")))?;
         }
         Ok(())
-    }
-
-    fn now(&self) -> i64 {
-        (self.ctx.clock)()
     }
 
     fn notify(&self, n: Notification) {
@@ -619,6 +618,10 @@ impl Engine {
 
         self.state.last_local = Some(to);
         self.save()?;
+        let hooks = std::mem::take(&mut self.fresh_hooks);
+        if !hooks.is_empty() {
+            crate::hooks::on_remote_change(self, hooks)?;
+        }
         Ok(Applied::Done)
     }
 
@@ -639,22 +642,22 @@ impl Engine {
     }
 
     fn queue_hooks(&mut self, changed: &[RelPath]) {
-        let mut hooks: BTreeSet<usize> = BTreeSet::new();
         for p in changed {
-            hooks.extend(self.matcher.watch_hooks_for(p));
-        }
-        for h in hooks {
-            if self.state.pending_hooks.contains(&h) {
-                continue;
-            }
-            self.state.pending_hooks.push(h);
-            if let Some(cmd) = self.cfg.watch.get(h).and_then(hook_command) {
-                self.notify(Notification::HookPending {
-                    project: self.project_id,
-                    command: cmd,
-                });
+            for h in self.matcher.watch_hooks_for(p) {
+                if !self.fresh_hooks.contains(&h) {
+                    self.fresh_hooks.push(h);
+                }
             }
         }
+    }
+
+    /// Per-project data directory (`$SPOKO_HOME/projects/<id>`).
+    pub fn data_dir(&self) -> &Path {
+        &self.dir
+    }
+
+    pub(crate) fn now(&self) -> i64 {
+        (self.ctx.clock)()
     }
 
     /// Number of object ids known to be on the server.
@@ -665,16 +668,4 @@ impl Engine {
     pub fn config(&self) -> &ProjectConfig {
         &self.cfg
     }
-}
-
-/// The command of a watch hook for this OS.
-pub fn hook_command(w: &spoko_core::config::WatchCfg) -> Option<String> {
-    let os = if cfg!(target_os = "macos") {
-        &w.run_macos
-    } else if cfg!(windows) {
-        &w.run_windows
-    } else {
-        &w.run_linux
-    };
-    os.clone().or_else(|| w.run.clone())
 }
