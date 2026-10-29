@@ -548,7 +548,7 @@ fn unlock_prompts_and_unlocks_the_daemon() {
     let p = m.dir_with("app", &[("a", "a")]);
     m.ok(&["init"], &p);
     assert_eq!(m.fail(&["unlock"], &m.top()), "daemon nie działa (spoko daemon start)");
-    let _daemon = start_daemon(&m, Arc::new(SilentVolumes));
+    let daemon = start_daemon(&m, Arc::new(SilentVolumes));
     let st = m.ok(&["status"], &m.top());
     assert!(st.contains("daemon: zablokowany (spoko unlock)"), "{st}");
     let wrong = Machine { passphrase: types_wrong, ..m };
@@ -561,6 +561,8 @@ fn unlock_prompts_and_unlocks_the_daemon() {
         assert!(Instant::now() < end, "project did not sync after unlock");
         std::thread::sleep(Duration::from_millis(50));
     }
+    // stop it while SPOKO_HOME still exists (`m`, rebound above, would go first)
+    drop(daemon);
 }
 
 #[test]
