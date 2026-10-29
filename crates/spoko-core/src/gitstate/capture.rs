@@ -82,16 +82,22 @@ pub fn capture_with_stats(root: &Path, store: &Store) -> crate::Result<(CaptureO
 /// Copies every object reachable from `roots` into the store. Objects are written only after
 /// their dependencies, so `store.has(x)` implies the store holds x's whole closure.
 pub fn copy_closure(repo: &Repository, store: &Store, roots: &[Oid]) -> crate::Result<usize> {
+    copy_objects(repo, store.repo(), roots)
+}
+
+/// Copies the closure of `roots` from `repo` into `dst`, dependencies first.
+pub fn copy_objects(repo: &Repository, dst_repo: &Repository, roots: &[Oid]) -> crate::Result<usize> {
     let src = repo.odb()?;
+    let dst = dst_repo.odb()?;
     let mut copied = 0;
     let mut stack: Vec<(Oid, bool)> = roots.iter().map(|o| (*o, false)).collect();
     while let Some((oid, expanded)) = stack.pop() {
-        if store.has(oid) {
+        if dst.exists(oid) {
             continue;
         }
         let Ok(obj) = src.read(oid) else { continue }; // shallow / partial clone: object absent
         if expanded {
-            store.write_raw(obj.kind(), obj.data())?;
+            dst.write(obj.kind(), obj.data())?;
             copied += 1;
             continue;
         }

@@ -1,5 +1,6 @@
 //! Mirroring the user's git repository state (never writing anything of spoko's into it).
 
+mod apply;
 mod capture;
 pub mod config_merge;
 
@@ -9,7 +10,8 @@ use std::path::PathBuf;
 use git2::Oid;
 use serde::{Deserialize, Serialize};
 
-pub use capture::{CaptureStats, capture, capture_with_stats};
+pub use apply::{ApplyGitOutcome, apply};
+pub use capture::{CaptureStats, capture, capture_with_stats, copy_objects};
 
 use crate::platform::RelPath;
 use crate::store::{Entry, EntryMode, Store, WorkMap};
