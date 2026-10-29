@@ -23,7 +23,7 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: Swatinem/rust-cache@v2
       # TODO(Task 28): raise to 100 once all crates are in.
-      - run: COVERAGE_MIN=90 ./scripts/coverage.sh
+      - run: COVERAGE_MIN=99 ./scripts/coverage.sh
   docker:
     runs-on: ubuntu-latest
     env: { SPOKO_DOCKER_TESTS: "1" }

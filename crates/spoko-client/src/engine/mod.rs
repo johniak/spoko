@@ -294,18 +294,8 @@ impl Engine {
         self.save()
     }
 
-    fn pause_for(&mut self, reason: PauseReason) -> Result<()> {
-        let n = match &reason {
-            PauseReason::MassDelete { deleted, total } => Notification::MassDelete {
-                project: self.project_id,
-                deleted: *deleted,
-                total: *total,
-            },
-            PauseReason::MissingRoot => Notification::MissingRoot {
-                project: self.project_id,
-            },
-            PauseReason::User => return self.pause(),
-        };
+    /// An automatic pause (the user's own goes through [`Engine::pause`]), with its notification.
+    fn pause_for(&mut self, reason: PauseReason, n: Notification) -> Result<()> {
         self.state.paused = Some(reason);
         self.notify(n);
         self.save()
@@ -315,7 +305,8 @@ impl Engine {
     /// when nothing changed, `None` when the project got paused.
     pub fn capture(&mut self, dirty: Option<&BTreeSet<RelPath>>) -> Result<Option<Oid>> {
         if !self.root.is_dir() {
-            self.pause_for(PauseReason::MissingRoot)?;
+            let n = Notification::MissingRoot { project: self.project_id };
+            self.pause_for(PauseReason::MissingRoot, n)?;
             return Ok(None);
         }
         let dirty = dirty.filter(|d| !d.iter().any(is_config_path));
@@ -359,7 +350,8 @@ impl Engine {
         if !self.state.guard_override
             && let GuardVerdict::MassDelete { deleted, total } = check_deletions(&guard_prev, &work)
         {
-            self.pause_for(PauseReason::MassDelete { deleted, total })?;
+            let n = Notification::MassDelete { project: self.project_id, deleted, total };
+            self.pause_for(PauseReason::MassDelete { deleted, total }, n)?;
             return Ok(None);
         }
 
