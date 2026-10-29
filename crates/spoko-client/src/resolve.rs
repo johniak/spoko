@@ -121,7 +121,9 @@ fn shell(cmd: &str, vars: &[(String, String)]) -> Command {
     for (k, v) in vars {
         text = text.replace(&format!("${k}"), v);
     }
+    // raw: std's argument quoting (\") is not understood by cmd.exe
+    use std::os::windows::process::CommandExt;
     let mut c = Command::new("cmd");
-    c.arg("/C").arg(text).envs(vars.iter().map(|(k, v)| (k, v)));
+    c.arg("/C").raw_arg(text).envs(vars.iter().map(|(k, v)| (k, v)));
     c
 }

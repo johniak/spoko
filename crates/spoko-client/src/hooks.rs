@@ -39,7 +39,7 @@ pub fn command_for(w: &WatchCfg, os: Os) -> Option<&str> {
     specific.as_deref().or(w.run.as_deref())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HookRun {
     pub command: String,
     pub status: i32,
@@ -95,15 +95,7 @@ pub fn run_pending(e: &mut Engine) -> Result<Vec<HookRun>> {
 }
 
 fn run_one(e: &Engine, cmd: &str) -> Result<HookRun> {
-    let mut c = if cfg!(windows) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(cmd);
-        c
-    } else {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(cmd);
-        c
-    };
+    let mut c = shell(cmd);
     let (status, output) = match c.current_dir(&e.root).output() {
         Ok(o) => (o.status.code().unwrap_or(-1), [o.stdout, o.stderr].concat()),
         Err(err) => (-1, err.to_string().into_bytes()),
@@ -113,4 +105,20 @@ fn run_one(e: &Engine, cmd: &str) -> Result<HookRun> {
     let mut log = std::fs::OpenOptions::new().create(true).append(true).open(e.data_dir().join("hooks.log"))?;
     writeln!(log, "[{}] $ {cmd}\n{output_tail}\n[exit {status}]", e.now())?;
     Ok(HookRun { command: cmd.to_owned(), status, output_tail })
+}
+
+#[cfg(windows)]
+fn shell(cmd: &str) -> Command {
+    // raw: std's argument quoting (\") is not understood by cmd.exe
+    use std::os::windows::process::CommandExt;
+    let mut c = Command::new("cmd");
+    c.arg("/C").raw_arg(cmd);
+    c
+}
+
+#[cfg(not(windows))]
+fn shell(cmd: &str) -> Command {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(cmd);
+    c
 }

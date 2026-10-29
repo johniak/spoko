@@ -1,0 +1,188 @@
+//! The background process: one worker per project, a file watcher, the server's event
+//! stream and a local IPC socket for the CLI and the tray.
+
+pub mod autostart;
+pub mod ipc;
+pub mod project_worker;
+pub mod watcher;
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crossbeam_channel::{Sender, bounded, unbounded};
+use spoko_core::config::{LocalConfig, ProjectConfig};
+use spoko_core::external::{ExternalEnv, resolve_externals};
+use spoko_proto::ServerEvent;
+use uuid::Uuid;
+
+use self::ipc::{ProjectStatus, Request, Response, StatusReport, SyncState};
+use self::project_worker::{Worker, WorkerMsg};
+use crate::account::Identity;
+use crate::engine::{DeviceCtx, Engine};
+use crate::notifier::Notifier;
+use crate::ws::EventStream;
+use crate::{ClientError, Result};
+
+/// Hooks for features that live in other crates (Docker volumes).
+pub trait Extensions: Send + Sync {
+    /// A project message arrived (e.g. another device asks for a volume snapshot).
+    fn on_message(&self, _e: &mut Engine, _payload: &[u8]) {}
+    /// Local changes are about to be synced (device-switch detection).
+    fn on_local_activity(&self, _e: &mut Engine) {}
+    /// Requests this crate cannot answer (`VolumePush`/`VolumePull`).
+    fn handle(&self, _e: &mut Engine, _req: &Request) -> Option<Response> {
+        None
+    }
+}
+
+pub struct NoExtensions;
+impl Extensions for NoExtensions {}
+
+pub struct DaemonOpts {
+    pub ext: Arc<dyn Extensions>,
+    pub notifier: Arc<dyn Notifier>,
+    pub env: ExternalEnv,
+    pub rescan_every: Duration,
+}
+
+struct ProjectHandle {
+    tx: Sender<WorkerMsg>,
+    status: Arc<Mutex<ProjectStatus>>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+/// Runs until a `Shutdown` request. Fails if another daemon owns this `SPOKO_HOME`.
+pub fn run(home: &Path, opts: DaemonOpts) -> Result<()> {
+    let lock_file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join("daemon.lock"))?;
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let _guard = lock.try_write().map_err(|_| ClientError::Other("spoko daemon is already running for this SPOKO_HOME".into()))?;
+    let identity = Identity::load(home)?;
+    let local = LocalConfig::load(home).map_err(spoko_core::Error::from)?;
+    let ctx = DeviceCtx::new(home, &identity, opts.env.clone(), opts.notifier.clone());
+
+    let mut projects: BTreeMap<Uuid, ProjectHandle> = BTreeMap::new();
+    let mut roots: BTreeMap<PathBuf, Uuid> = BTreeMap::new();
+    for (id, lp) in &local.projects {
+        let engine = Engine::open(ctx.clone(), *id, &lp.path)?;
+        let cfg = ProjectConfig::load(&lp.path).unwrap_or_default();
+        roots.insert(lp.path.clone(), *id);
+        for x in resolve_externals(&cfg, &lp.path, &opts.env) {
+            roots.insert(x.local_dir, *id);
+        }
+        let name = lp.path.file_name().map_or_else(|| id.to_string(), |n| n.to_string_lossy().into_owned());
+        let status = Arc::new(Mutex::new(ProjectStatus {
+            id: *id,
+            name,
+            root: lp.path.clone(),
+            state: SyncState::Syncing,
+            last_sync: None,
+            pending_hooks: vec![],
+            conflicts: 0,
+            warnings: vec![],
+        }));
+        let (tx, rx) = unbounded();
+        let worker = Worker::new(engine, opts.ext.clone(), status.clone(), opts.rescan_every);
+        let thread = std::thread::Builder::new().name(format!("spoko-{id}")).spawn(move || worker.run(&rx))?;
+        projects.insert(*id, ProjectHandle { tx, status, thread });
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let senders: BTreeMap<Uuid, Sender<WorkerMsg>> = projects.iter().map(|(id, p)| (*id, p.tx.clone())).collect();
+
+    // file events → workers
+    let (watcher, fs_rx) = watcher::Watcher::new(roots.keys().cloned().collect())?;
+    let fs_thread = {
+        let senders = senders.clone();
+        std::thread::spawn(move || {
+            for batch in fs_rx {
+                if let Some(tx) = roots.get(&batch.root).and_then(|id| senders.get(id)) {
+                    let _ = tx.send(WorkerMsg::Fs(batch));
+                }
+            }
+        })
+    };
+
+    // server events → workers
+    let ws_thread = {
+        let (senders, stop) = (senders.clone(), stop.clone());
+        let head = spoko_crypto::name_id(&identity.keyring, "ptr", "head");
+        let (url, token) = (identity.server_url.clone(), identity.token.clone());
+        std::thread::spawn(move || event_loop(&url, &token, &head, &senders, &stop))
+    };
+
+    let listener = ipc::listen(home)?;
+    ipc::serve(&listener, &mut |req| dispatch(&identity, &projects, req));
+
+    stop.store(true, Ordering::SeqCst);
+    drop(watcher);
+    for p in projects.values() {
+        let _ = p.tx.send(WorkerMsg::Shutdown);
+    }
+    drop(senders);
+    let _ = ws_thread.join();
+    for (_, p) in projects {
+        drop(p.tx);
+        let _ = p.thread.join();
+    }
+    let _ = fs_thread.join();
+    let _ = std::fs::remove_file(ipc::socket_path(home));
+    Ok(())
+}
+
+fn dispatch(identity: &Identity, projects: &BTreeMap<Uuid, ProjectHandle>, req: Request) -> Response {
+    if req == Request::Status {
+        let report = StatusReport { device_name: identity.device_name.clone(), projects: projects.values().map(|p| p.status.lock().expect("status").clone()).collect() };
+        return Response::Status { report };
+    }
+    let Some(p) = req.project().and_then(|id| projects.get(&id)) else { return Response::Error { message: "unknown project".into() } };
+    let (tx, rx) = bounded(1);
+    if p.tx.send(WorkerMsg::Ipc(req, tx)).is_err() {
+        return Response::Error { message: "project worker stopped".into() };
+    }
+    rx.recv().unwrap_or(Response::Error { message: "project worker stopped".into() })
+}
+
+fn event_loop(url: &str, token: &str, head: &str, senders: &BTreeMap<Uuid, Sender<WorkerMsg>>, stop: &AtomicBool) {
+    let mut backoff = project_worker::BACKOFF_MIN;
+    while !stop.load(Ordering::SeqCst) {
+        let mut ws = match EventStream::connect(url, token) {
+            Ok(ws) => ws,
+            Err(_) => {
+                sleep_unless(stop, backoff);
+                backoff = (backoff * 2).min(project_worker::BACKOFF_MAX);
+                continue;
+            }
+        };
+        backoff = project_worker::BACKOFF_MIN;
+        // (re)connected: anything may have happened meanwhile
+        for tx in senders.values() {
+            let _ = tx.send(WorkerMsg::Remote);
+        }
+        while !stop.load(Ordering::SeqCst) {
+            match ws.next(Duration::from_millis(300)) {
+                Ok(Some(ServerEvent::PointerChanged { project, name, .. })) if name == head => {
+                    if let Some(tx) = senders.get(&project) {
+                        let _ = tx.send(WorkerMsg::Remote);
+                    }
+                }
+                Ok(Some(ServerEvent::Message { project, payload, .. })) => {
+                    if let Some(tx) = senders.get(&project) {
+                        let _ = tx.send(WorkerMsg::Message(payload));
+                    }
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+    }
+}
+
+fn sleep_unless(stop: &AtomicBool, d: Duration) {
+    let end = std::time::Instant::now() + d;
+    while !stop.load(Ordering::SeqCst) && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}

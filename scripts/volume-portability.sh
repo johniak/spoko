@@ -13,7 +13,7 @@ wait_ready spoko-port-a
 docker exec spoko-port-a psql -U postgres -c "create table t(v text); insert into t values ('zażółć'); create index on t(v);" >/dev/null
 docker stop spoko-port-a >/dev/null
 docker run -d --platform linux/amd64 --name spoko-port-b -e POSTGRES_PASSWORD=x -v "$VOL:/var/lib/postgresql/data" "$IMAGE" >/dev/null
-if wait_ready spoko-port-b && [ "$(docker exec spoko-port-b psql -U postgres -tAc "set enable_seqscan=off; select v from t where v='zażółć'")" = "zażółć" ]; then
+if wait_ready spoko-port-b && [ "$(docker exec -e PGOPTIONS='-c enable_seqscan=off' spoko-port-b psql -U postgres -tAc "select v from t where v='zażółć'")" = "zażółć" ]; then
   echo "RESULT: ok ($IMAGE arm64 → amd64)"
 else
   docker logs spoko-port-b 2>&1 | tail -20

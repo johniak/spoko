@@ -37,19 +37,61 @@ impl Drop for TestServer {
     }
 }
 
+/// A stopped [`TestServer`] that keeps its data and address.
+pub struct StoppedServer {
+    addr: SocketAddr,
+    dir: tempfile::TempDir,
+}
+
+impl TestServer {
+    /// Stops the server (open connections are dropped) keeping its data for [`StoppedServer::restart`].
+    pub fn stop(mut self) -> StoppedServer {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        let dir = std::mem::replace(&mut self._dir, tempfile::tempdir().unwrap());
+        StoppedServer { addr: self.addr, dir }
+    }
+}
+
+impl StoppedServer {
+    pub fn restart(self) -> TestServer {
+        spawn_in(self.dir, Some(self.addr))
+    }
+}
+
 pub fn spawn_test_server() -> TestServer {
     spawn_on(None)
 }
 
 /// Like [`spawn_test_server`] but optionally on a fixed address (to restart a server in place).
 pub fn spawn_on(addr: Option<SocketAddr>) -> TestServer {
-    let dir = tempfile::tempdir().unwrap();
+    spawn_in(tempfile::tempdir().unwrap(), addr)
+}
+
+fn spawn_in(dir: tempfile::TempDir, addr: Option<SocketAddr>) -> TestServer {
     let state: Shared = Arc::new(AppState {
         db: crate::db::Db::open(&dir.path().join("spoko.db")).unwrap(),
         blobs: crate::blobstore::BlobStore::new(dir.path().join("blobs")),
         hub: crate::hub::Hub::default(),
     });
-    let std_listener = std::net::TcpListener::bind(addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap())).unwrap();
+    let bind = addr.unwrap_or_else(|| "127.0.0.1:0".parse().unwrap());
+    // the old listener may linger briefly after a stop
+    let mut tries = 0;
+    let std_listener = loop {
+        match std::net::TcpListener::bind(bind) {
+            Ok(l) => break l,
+            Err(e) if tries < 50 => {
+                tries += 1;
+                let _ = e;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => panic!("bind {bind}: {e}"),
+        }
+    };
     std_listener.set_nonblocking(true).unwrap();
     let addr = std_listener.local_addr().unwrap();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
