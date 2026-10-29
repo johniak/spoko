@@ -3,6 +3,7 @@ use std::path::Path;
 
 use git2::Oid;
 use serde::{Deserialize, Serialize};
+use spoko_core::guard::DeleteLog;
 use spoko_core::platform::RelPath;
 use spoko_core::store::Entry;
 
@@ -27,6 +28,8 @@ pub struct ProjectState {
     pub paused: Option<PauseReason>,
     /// Skip the mass-delete guard once (`spoko resume --confirm`).
     pub guard_override: bool,
+    /// Recent local deletions, judged together by the mass-delete guard.
+    pub deletions: DeleteLog,
     pub pending_hooks: Vec<usize>,
     #[serde(with = "spoko_core::serde_oid::opt", default)]
     pub join_snapshot: Option<Oid>,

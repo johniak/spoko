@@ -394,6 +394,71 @@ fn mass_delete_pauses_project() {
     assert_eq!(tree(&b.root).len(), 40);
 }
 
+/// `rm` of `range` reported to the engine as one watcher batch.
+fn rm_batch(d: &Device, range: std::ops::Range<usize>) -> BTreeSet<RelPath> {
+    range
+        .map(|i| {
+            let p = format!("f{i:03}");
+            d.rm(&p);
+            RelPath::new(&p)
+        })
+        .collect()
+}
+
+#[test]
+fn slow_mass_delete_over_several_batches_pauses() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    for i in 0..400 {
+        a.write(&format!("f{i:03}"), format!("{i}"));
+    }
+    let ea = a.create();
+    let id = ea.project_id;
+    let (mut eb, _) = b.join(id);
+    // each batch alone looks like ordinary work (15 %, 18 %, 21 %): the first two go out
+    let mut ea = ea;
+    assert_eq!(ea.sync_dirty(Some(&rm_batch(&a, 0..60))).unwrap(), SyncOutcome::Pushed);
+    // the daemon restarting in between does not reset the count
+    drop(ea);
+    let mut ea = a.open(id);
+    assert_eq!(ea.sync_dirty(Some(&rm_batch(&a, 60..120))).unwrap(), SyncOutcome::Pushed, "30 %");
+    assert_eq!(ea.sync_dirty(Some(&rm_batch(&a, 120..180))).unwrap(), SyncOutcome::Paused);
+    assert_eq!(ea.state.paused, Some(PauseReason::MassDelete { deleted: 180, total: 400 }));
+    assert!(a.notes.take().contains(&Notification::MassDelete { project: id, deleted: 180, total: 400 }));
+    eb.sync().unwrap();
+    assert_eq!(tree(&b.root).len(), 280, "the third batch was not pushed");
+    ea.resume(true).unwrap();
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed);
+    // confirmed deletions are not held against the next ones
+    assert_eq!(ea.sync_dirty(Some(&rm_batch(&a, 180..200))).unwrap(), SyncOutcome::Pushed);
+    eb.sync().unwrap();
+    assert_eq!(tree(&b.root).len(), 200);
+}
+
+#[test]
+fn ordinary_deletions_over_time_do_not_pause() {
+    let mut w = World::new();
+    let mut a = w.device("a");
+    let b = w.device("b");
+    let now = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(1_700_000_000));
+    let clock = now.clone();
+    a.ctx.clock = std::sync::Arc::new(move || clock.load(std::sync::atomic::Ordering::SeqCst));
+    for i in 0..200 {
+        a.write(&format!("f{i:03}"), format!("{i}"));
+    }
+    let mut ea = a.create();
+    let (mut eb, _) = b.join(ea.project_id);
+    // 10 files every two minutes: half the project in 20 minutes, never 50 within the window
+    for step in 0..10 {
+        now.fetch_add(120, std::sync::atomic::Ordering::SeqCst);
+        let gone = rm_batch(&a, step * 10..step * 10 + 10);
+        assert_eq!(ea.sync_dirty(Some(&gone)).unwrap(), SyncOutcome::Pushed, "step {step}");
+    }
+    eb.sync().unwrap();
+    assert_eq!(tree(&b.root).len(), 100);
+}
+
 #[test]
 fn missing_root_pauses_project() {
     let mut w = World::new();

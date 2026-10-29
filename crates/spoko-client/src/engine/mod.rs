@@ -17,7 +17,7 @@ use spoko_core::filter::{Class, Matcher};
 use spoko_core::gitstate::{
     self, ApplyGitOutcome, CaptureOutcome, GitState, gitstate_tree, read_gitstate,
 };
-use spoko_core::guard::{GuardVerdict, check_deletions};
+use spoko_core::guard::GuardVerdict;
 use spoko_core::merge::carry_conflicts;
 use spoko_core::platform::{self, RelPath, read_entry};
 use spoko_core::scan::{StatCache, full_scan_with, incremental_scan};
@@ -353,13 +353,18 @@ impl Engine {
                 guard_prev.insert(p.clone(), *e);
             }
         }
-        if !self.state.guard_override
-            && let GuardVerdict::MassDelete { deleted, total } = check_deletions(&guard_prev, &work)
-        {
-            let n = Notification::MassDelete { project: self.project_id, deleted, total };
-            self.pause_for(PauseReason::MassDelete { deleted, total }, n)?;
-            return Ok(None);
-        }
+        let now = self.now();
+        let deletion = if self.state.guard_override {
+            None
+        } else {
+            let (verdict, d) = self.state.deletions.check(now, &guard_prev, &work);
+            if let GuardVerdict::MassDelete { deleted, total } = verdict {
+                let n = Notification::MassDelete { project: self.project_id, deleted, total };
+                self.pause_for(PauseReason::MassDelete { deleted, total }, n)?;
+                return Ok(None);
+            }
+            d
+        };
 
         let prev = self
             .state
@@ -419,7 +424,7 @@ impl Engine {
             meta: SnapshotMeta {
                 device_id: self.ctx.device_id,
                 device_name: self.ctx.device_name.clone(),
-                time: self.now(),
+                time: now,
                 conflicts,
             },
         };
@@ -435,9 +440,12 @@ impl Engine {
             let parents: Vec<Oid> = self.state.last_local.into_iter().collect();
             let oid = write_snapshot(&self.store, &parts, &parents)?;
             self.state.last_local = Some(oid);
-            self.state.guard_override = false;
+            if std::mem::take(&mut self.state.guard_override) {
+                self.state.deletions.clear();
+            }
             oid
         };
+        self.state.deletions.commit(now, &work, deletion);
         self.work = work;
         self.ext_work = ext_work;
         self.save()?;
