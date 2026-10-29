@@ -137,10 +137,13 @@ fn fnv(s: &str) -> u64 {
 /// Socket address for a home. Unix: `<runtime dir>/spoko-<hash>/sock`, a short path (Unix
 /// path length limits) in a directory only the owner of `SPOKO_HOME` may enter
 /// (`$XDG_RUNTIME_DIR` when set, else the temp dir). Windows: a file in the home naming the pipe.
+#[cfg(windows)]
 pub fn socket_path(home: &Path) -> PathBuf {
-    if cfg!(windows) {
-        return home.join("daemon.pipe");
-    }
+    home.join("daemon.pipe")
+}
+
+#[cfg(not(windows))]
+pub fn socket_path(home: &Path) -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(std::env::temp_dir);
     base.join(format!("spoko-{:016x}", fnv(&home.to_string_lossy()))).join("sock")
 }

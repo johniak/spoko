@@ -306,6 +306,12 @@ fn a_socket_directory_squatted_before_the_daemon_is_refused() {
     assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
     drop(l);
     let _ = std::fs::remove_dir_all(&dir);
+    // a file (or anything but our own directory) in its place: no daemon can be there
+    std::fs::write(&dir, b"x").unwrap();
+    let err = ipc::request(home.path(), &Request::Status).unwrap_err().to_string();
+    assert!(err.contains("not private"), "{err}");
+    assert!(ipc::listen(home.path()).is_err());
+    std::fs::remove_file(&dir).unwrap();
 }
 
 #[test]

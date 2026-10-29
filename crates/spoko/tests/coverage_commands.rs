@@ -650,3 +650,25 @@ fn clone_into_a_non_empty_directory_needs_join() {
     assert!(b.fail(&["clone", &id], &parent).contains("--join"));
     assert!(parent.join("app/mine.txt").exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn merge_tool_runs_here_and_a_running_daemon_records_it() {
+    let srv = spawn_test_server();
+    let (a, b) = pair_of_machines(&srv);
+    let pa = a.dir_with("app", &[("f.txt", "base\n")]);
+    let id = project_id(&a.ok(&["init"], &pa));
+    let pb = b.path("app");
+    b.ok(&["clone", &id, pb.to_str().unwrap()], &b.top());
+    let pb = pb.canonicalize().unwrap();
+    std::fs::write(pa.join("f.txt"), "mac\n").unwrap();
+    std::fs::write(pb.join("f.txt"), "linux\n").unwrap();
+    a.ok(&["sync"], &pa);
+    assert!(b.ok(&["sync"], &pb).contains("konflikty: 1"));
+    merge_tool(&pb, "spoko-test-take-theirs", Some("cp \"$REMOTE\" \"$MERGED\""));
+    let daemon = start_daemon(&b, Arc::new(SilentVolumes));
+    assert_eq!(b.ok(&["resolve", "f.txt"], &pb), "Rozwiązano: f.txt\n");
+    assert_eq!(read(&pb.join("f.txt")), "mac\n");
+    wait_for("the daemon recorded the resolution", || b.ok(&["resolve"], &pb) == "Brak konfliktów.\n");
+    drop(daemon);
+}
