@@ -108,6 +108,9 @@ pub struct Engine {
     pub faults: Option<Box<dyn ApplyFaults + Send + Sync>>,
     /// Test hook: runs once right before the next apply from the network.
     pub before_apply: Option<Box<dyn FnOnce() + Send>>,
+    /// Test hook: runs right before each write to the user's `.git` and the re-read after it
+    /// (another git process may take its lock in between).
+    pub before_git: Option<Box<dyn Fn() + Send>>,
     dir: PathBuf,
     cfg: ProjectConfig,
     matcher: Matcher,
@@ -163,6 +166,7 @@ impl Engine {
             state,
             faults: None,
             before_apply: None,
+            before_git: None,
             dir,
             cfg,
             matcher,
@@ -469,12 +473,16 @@ impl Engine {
                             .state
                         })
                     };
-                    if let Some(target) = target
-                        && let ApplyGitOutcome::Applied =
-                            gitstate::apply(&self.root, &self.store, Some(&gs), &target)?
-                    {
-                        self.state.pending_gitstate = None;
-                        tree = self.recapture_gitstate()?.unwrap_or(tree);
+                    if let Some(target) = target {
+                        self.git_hook();
+                        match gitstate::apply(&self.root, &self.store, Some(&gs), &target)? {
+                            ApplyGitOutcome::Applied => {
+                                self.state.pending_gitstate = None;
+                                tree = self.recapture_gitstate()?.unwrap_or(tree);
+                            }
+                            // busy again: like a busy capture, keep the previous state for now
+                            ApplyGitOutcome::Deferred(_) => return Ok(prev),
+                        }
                     }
                 }
                 self.state.applied_gitstate = Some(tree);
@@ -485,7 +493,14 @@ impl Engine {
         }
     }
 
+    fn git_hook(&self) {
+        if let Some(hook) = &self.before_git {
+            hook();
+        }
+    }
+
     fn recapture_gitstate(&self) -> Result<Option<Oid>> {
+        self.git_hook();
         Ok(match gitstate::capture(&self.root, &self.store)? {
             CaptureOutcome::Captured(gs) => Some(gitstate_tree(&self.store, &gs)?),
             _ => None,
@@ -669,6 +684,7 @@ impl Engine {
     }
 
     fn apply_git(&mut self, from: Option<&GitState>, want: &GitState, tree: Oid) -> Result<()> {
+        self.git_hook();
         match gitstate::apply(&self.root, &self.store, from, want)? {
             ApplyGitOutcome::Applied => {
                 self.state.pending_gitstate = None;

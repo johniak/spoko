@@ -34,6 +34,8 @@ impl Engine {
         e.fetch(remote)?;
         let mut report = JoinReport::default();
         if !empty {
+            // a join that did not finish may have replaced files already: its snapshot has them
+            let unfinished = e.state.join_snapshot.filter(|_| e.state.base.is_none());
             e.state.last_local = None;
             e.work.clear();
             e.ext_work.clear();
@@ -53,8 +55,10 @@ impl Engine {
                 .collect::<std::collections::BTreeSet<_>>()
                 .into_iter()
                 .collect();
-            report.join_snapshot = Some(local);
-            e.state.join_snapshot = Some(local);
+            report.join_snapshot = Some(unfinished.unwrap_or(local));
+            e.state.join_snapshot = report.join_snapshot;
+            // kept even if the apply below fails half-way
+            e.save()?;
         }
         match e.apply_snapshot(remote, !empty)? {
             Applied::Done => {}
