@@ -18,9 +18,18 @@ pub struct UploadStats {
 }
 
 /// Uploads the objects the server lacks and records all of them as known.
-pub fn push_objects(store: &Store, server: &dyn ObjectServer, kr: &Keyring, known: &mut KnownSet, objs: &[(Oid, ObjectType)]) -> Result<UploadStats> {
+pub fn push_objects(
+    store: &Store,
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    known: &mut KnownSet,
+    objs: &[(Oid, ObjectType)],
+) -> Result<UploadStats> {
     let mut stats = UploadStats::default();
-    let ids: Vec<ObjectId> = objs.iter().map(|(o, _)| git_object_id(kr, o.as_bytes())).collect();
+    let ids: Vec<ObjectId> = objs
+        .iter()
+        .map(|(o, _)| git_object_id(kr, o.as_bytes()))
+        .collect();
     let mut missing: HashSet<ObjectId> = HashSet::new();
     for part in ids.chunks(1000) {
         missing.extend(server.missing(part)?);
@@ -35,7 +44,8 @@ pub fn push_objects(store: &Store, server: &dyn ObjectServer, kr: &Keyring, know
         let (size, _) = odb.read_header(*oid)?;
         let item = if size as u64 > CHUNK_THRESHOLD {
             let (reader, _, _) = odb.reader(*oid)?;
-            let (manifest, uploaded): (Manifest, usize) = push_stream(server, kr, reader, kind_of(*kind))?;
+            let (manifest, uploaded): (Manifest, usize) =
+                push_stream(server, kr, reader, kind_of(*kind))?;
             stats.chunks += uploaded;
             (*id, KIND_MANIFEST, manifest.to_bytes())
         } else {

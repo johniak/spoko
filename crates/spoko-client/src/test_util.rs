@@ -33,7 +33,11 @@ impl ObjectServer for MemServer {
     fn missing(&self, ids: &[ObjectId]) -> Result<Vec<ObjectId>> {
         self.missing_calls.fetch_add(1, Ordering::SeqCst);
         let objs = self.objects.lock().expect("mem");
-        Ok(ids.iter().filter(|i| !objs.contains_key(i)).copied().collect())
+        Ok(ids
+            .iter()
+            .filter(|i| !objs.contains_key(i))
+            .copied()
+            .collect())
     }
     fn put(&self, batch: &[(ObjectId, Vec<u8>)]) -> Result<()> {
         let mut objs = self.objects.lock().expect("mem");
@@ -44,14 +48,15 @@ impl ObjectServer for MemServer {
         Ok(())
     }
     fn get(&self, ids: &[ObjectId]) -> Result<Vec<(ObjectId, Vec<u8>)>> {
+        let objs = self.objects.lock().expect("mem");
+        let out: Vec<_> = ids.iter().filter_map(|i| objs.get(i).map(|b| (*i, b.clone()))).collect();
+        // counted under the lock so parallel workers cannot all slip under the limit
+        let before = self.returned.fetch_add(out.len(), Ordering::SeqCst);
         if let Some(limit) = *self.fail_get_after.lock().expect("mem")
-            && self.returned.load(Ordering::SeqCst) >= limit
+            && before + out.len() > limit
         {
             return Err(crate::ClientError::Server("simulated outage".into()));
         }
-        let objs = self.objects.lock().expect("mem");
-        let out: Vec<_> = ids.iter().filter_map(|i| objs.get(i).map(|b| (*i, b.clone()))).collect();
-        self.returned.fetch_add(out.len(), Ordering::SeqCst);
         Ok(out)
     }
 }

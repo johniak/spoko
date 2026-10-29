@@ -27,9 +27,17 @@ impl EventStream {
     /// Connects to `/v1/events`. The first frame the server sends is the account presence,
     /// after which the subscription is live; callers should resync after every (re)connect.
     pub fn connect(server_url: &str, token: &str) -> Result<EventStream> {
-        let url = format!("{}{API_PREFIX}/events", server_url.trim_end_matches('/')).replacen("http", "ws", 1);
-        let mut req = url.into_client_request().map_err(|e| ClientError::Network(e.to_string()))?;
-        req.headers_mut().insert("Authorization", format!("Bearer {token}").parse().map_err(|_| ClientError::Other("bad token".into()))?);
+        let url = format!("{}{API_PREFIX}/events", server_url.trim_end_matches('/'))
+            .replacen("http", "ws", 1);
+        let mut req = url
+            .into_client_request()
+            .map_err(|e| ClientError::Network(e.to_string()))?;
+        req.headers_mut().insert(
+            "Authorization",
+            format!("Bearer {token}")
+                .parse()
+                .map_err(|_| ClientError::Other("bad token".into()))?,
+        );
         let (ws, _) = tungstenite::connect(req).map_err(|e| match e {
             tungstenite::Error::Http(r) if r.status() == 401 => ClientError::Unauthorized,
             e => ClientError::Network(e.to_string()),
@@ -44,10 +52,20 @@ impl EventStream {
         }
         loop {
             match self.ws.read() {
-                Ok(Message::Text(t)) => return serde_json::from_str(&t).map(Some).map_err(|e| ClientError::Server(e.to_string())),
-                Ok(Message::Close(_)) => return Err(ClientError::Network("event stream closed".into())),
+                Ok(Message::Text(t)) => {
+                    return serde_json::from_str(&t)
+                        .map(Some)
+                        .map_err(|e| ClientError::Server(e.to_string()));
+                }
+                Ok(Message::Close(_)) => {
+                    return Err(ClientError::Network("event stream closed".into()));
+                }
                 Ok(_) => {}
-                Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => return Ok(None),
+                Err(tungstenite::Error::Io(e))
+                    if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
+                {
+                    return Ok(None);
+                }
                 Err(e) => return Err(ClientError::Network(e.to_string())),
             }
         }

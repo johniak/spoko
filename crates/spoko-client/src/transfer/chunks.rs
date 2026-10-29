@@ -33,7 +33,11 @@ impl Manifest {
 }
 
 /// Seals and uploads `items` (id, kind, plaintext) using up to [`WORKERS`] threads.
-pub fn parallel_put(server: &dyn ObjectServer, kr: &Keyring, items: Vec<(ObjectId, u8, Vec<u8>)>) -> Result<usize> {
+pub fn parallel_put(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    items: Vec<(ObjectId, u8, Vec<u8>)>,
+) -> Result<usize> {
     if items.is_empty() {
         return Ok(0);
     }
@@ -55,7 +59,9 @@ pub fn parallel_put(server: &dyn ObjectServer, kr: &Keyring, items: Vec<(ObjectI
                     let mut bytes = 0;
                     for (id, kind, data) in g {
                         let sealed = seal_object(kr, &id, kind, &data);
-                        if bytes + sealed.len() + 36 > spoko_proto::MAX_BATCH_BYTES && !batch.is_empty() {
+                        if bytes + sealed.len() + 36 > spoko_proto::MAX_BATCH_BYTES
+                            && !batch.is_empty()
+                        {
                             server.put(&batch)?;
                             batch.clear();
                             bytes = 0;
@@ -71,12 +77,19 @@ pub fn parallel_put(server: &dyn ObjectServer, kr: &Keyring, items: Vec<(ObjectI
                 })
             })
             .collect();
-        handles.into_iter().map(|h| h.join().expect("upload worker panicked")).sum()
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("upload worker panicked"))
+            .sum()
     })
 }
 
 /// Fetches and decrypts `ids` in parallel; missing ids are simply absent from the result.
-pub fn parallel_get(server: &dyn ObjectServer, kr: &Keyring, ids: &[ObjectId]) -> Result<Vec<(ObjectId, u8, Vec<u8>)>> {
+pub fn parallel_get(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    ids: &[ObjectId],
+) -> Result<Vec<(ObjectId, u8, Vec<u8>)>> {
     if ids.is_empty() {
         return Ok(vec![]);
     }
@@ -105,17 +118,31 @@ pub fn parallel_get(server: &dyn ObjectServer, kr: &Keyring, ids: &[ObjectId]) -
     })
 }
 
-fn flush(server: &dyn ObjectServer, kr: &Keyring, pending: &mut Vec<(ObjectId, Vec<u8>)>, stats: &mut usize) -> Result<()> {
+fn flush(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    pending: &mut Vec<(ObjectId, Vec<u8>)>,
+    stats: &mut usize,
+) -> Result<()> {
     let ids: Vec<ObjectId> = pending.iter().map(|(i, _)| *i).collect();
     let missing: std::collections::HashSet<ObjectId> = server.missing(&ids)?.into_iter().collect();
-    let items: Vec<_> = pending.drain(..).filter(|(id, _)| missing.contains(id)).map(|(id, d)| (id, KIND_CHUNK, d)).collect();
+    let items: Vec<_> = pending
+        .drain(..)
+        .filter(|(id, _)| missing.contains(id))
+        .map(|(id, d)| (id, KIND_CHUNK, d))
+        .collect();
     *stats += items.len();
     parallel_put(server, kr, items)?;
     Ok(())
 }
 
 /// Chunks a stream, uploads chunks the server lacks, returns the manifest.
-pub fn push_stream(server: &dyn ObjectServer, kr: &Keyring, reader: impl Read, kind: u8) -> Result<(Manifest, usize)> {
+pub fn push_stream(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    reader: impl Read,
+    kind: u8,
+) -> Result<(Manifest, usize)> {
     let mut chunks = Vec::new();
     let mut size = 0;
     let mut pending: Vec<(ObjectId, Vec<u8>)> = Vec::new();
@@ -138,16 +165,28 @@ pub fn push_stream(server: &dyn ObjectServer, kr: &Keyring, reader: impl Read, k
 }
 
 /// Downloads the chunks of `manifest` in order and writes them to `out`.
-pub fn fetch_stream(server: &dyn ObjectServer, kr: &Keyring, manifest: &Manifest, out: &mut dyn Write) -> Result<()> {
+pub fn fetch_stream(
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    manifest: &Manifest,
+    out: &mut dyn Write,
+) -> Result<()> {
     for window in manifest.chunks.chunks(WORKERS * 4) {
         let mut unique: Vec<ObjectId> = window.to_vec();
         unique.sort();
         unique.dedup();
-        let got: std::collections::HashMap<ObjectId, Vec<u8>> = parallel_get(server, kr, &unique)?.into_iter().map(|(i, _, d)| (i, d)).collect();
+        let got: std::collections::HashMap<ObjectId, Vec<u8>> = parallel_get(server, kr, &unique)?
+            .into_iter()
+            .map(|(i, _, d)| (i, d))
+            .collect();
         for id in window {
-            let data = got.get(id).ok_or_else(|| ClientError::Integrity(format!("missing chunk {id}")))?;
+            let data = got
+                .get(id)
+                .ok_or_else(|| ClientError::Integrity(format!("missing chunk {id}")))?;
             if chunk_id(kr, data) != *id {
-                return Err(ClientError::Integrity(format!("chunk {id} content mismatch")));
+                return Err(ClientError::Integrity(format!(
+                    "chunk {id} content mismatch"
+                )));
             }
             out.write_all(data)?;
         }

@@ -68,9 +68,16 @@ fn parse_hex(hex: &[u8]) -> Option<Oid> {
 pub fn tree_entries(mut data: &[u8]) -> Vec<(u32, Oid)> {
     let mut out = Vec::new();
     while let Some(sp) = data.iter().position(|b| *b == b' ') {
-        let mode = std::str::from_utf8(&data[..sp]).ok().and_then(|m| u32::from_str_radix(m, 8).ok()).unwrap_or(0);
-        let Some(nul) = data[sp..].iter().position(|b| *b == 0).map(|n| sp + n) else { break };
-        let Some(raw) = data.get(nul + 1..nul + 21) else { break };
+        let mode = std::str::from_utf8(&data[..sp])
+            .ok()
+            .and_then(|m| u32::from_str_radix(m, 8).ok())
+            .unwrap_or(0);
+        let Some(nul) = data[sp..].iter().position(|b| *b == 0).map(|n| sp + n) else {
+            break;
+        };
+        let Some(raw) = data.get(nul + 1..nul + 21) else {
+            break;
+        };
         out.extend(Oid::from_bytes(raw).ok().map(|o| (mode, o)));
         data = &data[nul + 21..];
     }
@@ -78,11 +85,19 @@ pub fn tree_entries(mut data: &[u8]) -> Vec<(u32, Oid)> {
 }
 
 /// Objects reachable from `snapshots` that are not in `known`, dependencies first.
-pub fn new_objects(store: &Store, snapshots: &[Oid], known: &KnownSet, kr: &Keyring) -> Result<Vec<(Oid, ObjectType)>> {
+pub fn new_objects(
+    store: &Store,
+    snapshots: &[Oid],
+    known: &KnownSet,
+    kr: &Keyring,
+) -> Result<Vec<(Oid, ObjectType)>> {
     let odb = store.repo().odb()?;
     let mut out = Vec::new();
     let mut seen: HashSet<Oid> = HashSet::new();
-    let mut stack: Vec<(Oid, Role, bool)> = snapshots.iter().map(|o| (*o, Role::Snapshot, false)).collect();
+    let mut stack: Vec<(Oid, Role, bool)> = snapshots
+        .iter()
+        .map(|o| (*o, Role::Snapshot, false))
+        .collect();
     while let Some((oid, role, expanded)) = stack.pop() {
         if expanded {
             let kind = odb.read_header(oid)?.1;
@@ -94,7 +109,11 @@ pub fn new_objects(store: &Store, snapshots: &[Oid], known: &KnownSet, kr: &Keyr
         }
         let Ok(obj) = odb.read(oid) else { continue }; // e.g. submodule commit not in the store
         stack.push((oid, role, true));
-        let role = if role == Role::Any && obj.kind() == ObjectType::Commit { Role::UserCommit } else { role };
+        let role = if role == Role::Any && obj.kind() == ObjectType::Commit {
+            Role::UserCommit
+        } else {
+            role
+        };
         for (dep, r, _) in deps(obj.kind(), role, obj.data()) {
             stack.push((dep, r, false));
         }

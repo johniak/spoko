@@ -29,7 +29,9 @@ pub fn object_type(kind: u8) -> Result<ObjectType> {
         KIND_TREE => Ok(ObjectType::Tree),
         KIND_BLOB => Ok(ObjectType::Blob),
         KIND_TAG => Ok(ObjectType::Tag),
-        k => Err(ClientError::Integrity(format!("not a git object kind: {k}"))),
+        k => Err(ClientError::Integrity(format!(
+            "not a git object kind: {k}"
+        ))),
     }
 }
 
@@ -43,8 +45,14 @@ pub fn encode(kind: u8, data: &[u8]) -> Vec<u8> {
 }
 
 pub fn decode(plain: &[u8]) -> Result<(u8, Vec<u8>)> {
-    let [kind, flags, payload @ ..] = plain else { return Err(ClientError::Integrity("short object".into())) };
-    let data = if flags & 1 == 1 { zstd::stream::decode_all(payload).map_err(|e| ClientError::Integrity(e.to_string()))? } else { payload.to_vec() };
+    let [kind, flags, payload @ ..] = plain else {
+        return Err(ClientError::Integrity("short object".into()));
+    };
+    let data = if flags & 1 == 1 {
+        zstd::stream::decode_all(payload).map_err(|e| ClientError::Integrity(e.to_string()))?
+    } else {
+        payload.to_vec()
+    };
     Ok((*kind, data))
 }
 

@@ -31,7 +31,10 @@ impl KnownSet {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        Ok(KnownSet { ids, path: Some(path.to_path_buf()) })
+        Ok(KnownSet {
+            ids,
+            path: Some(path.to_path_buf()),
+        })
     }
 
     pub fn contains(&self, id: &ObjectId) -> bool {
@@ -47,7 +50,11 @@ impl KnownSet {
     }
 
     pub fn insert_many(&mut self, ids: impl IntoIterator<Item = ObjectId>) -> std::io::Result<()> {
-        let fresh: Vec<[u8; 32]> = ids.into_iter().map(|i| i.0).filter(|i| self.ids.insert(*i)).collect();
+        let fresh: Vec<[u8; 32]> = ids
+            .into_iter()
+            .map(|i| i.0)
+            .filter(|i| self.ids.insert(*i))
+            .collect();
         if let (Some(path), false) = (&self.path, fresh.is_empty()) {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;

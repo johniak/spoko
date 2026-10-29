@@ -17,7 +17,13 @@ pub struct DownloadStats {
 }
 
 fn verify(kind: ObjectType, data: &[u8], oid: Oid) -> Result<()> {
-    if Oid::hash_object(kind, data)? == oid { Ok(()) } else { Err(ClientError::Integrity(format!("object {oid} content mismatch"))) }
+    if Oid::hash_object(kind, data)? == oid {
+        Ok(())
+    } else {
+        Err(ClientError::Integrity(format!(
+            "object {oid} content mismatch"
+        )))
+    }
 }
 
 /// Downloads everything reachable from snapshot `roots` that the store lacks.
@@ -25,21 +31,38 @@ fn verify(kind: ObjectType, data: &[u8], oid: Oid) -> Result<()> {
 /// Blobs are written as they arrive (they have no dependencies). Trees, commits and tags are
 /// written only after the whole closure is present, children first, so an interrupted download
 /// never leaves a tree in the store whose blobs are missing.
-pub fn fetch_closure(store: &Store, server: &dyn ObjectServer, kr: &Keyring, roots: &[Oid]) -> Result<DownloadStats> {
+pub fn fetch_closure(
+    store: &Store,
+    server: &dyn ObjectServer,
+    kr: &Keyring,
+    roots: &[Oid],
+) -> Result<DownloadStats> {
     let odb = store.repo().odb()?;
     let mut stats = DownloadStats::default();
     let mut pending: HashMap<Oid, (ObjectType, Vec<u8>, Role)> = HashMap::new();
     let mut seen: HashSet<Oid> = HashSet::new();
-    let mut frontier: Vec<(Oid, Role, bool)> = roots.iter().filter(|o| !odb.exists(**o)).map(|o| (*o, Role::Snapshot, true)).collect();
+    let mut frontier: Vec<(Oid, Role, bool)> = roots
+        .iter()
+        .filter(|o| !odb.exists(**o))
+        .map(|o| (*o, Role::Snapshot, true))
+        .collect();
     while !frontier.is_empty() {
         frontier.retain(|(o, _, _)| seen.insert(*o));
-        let ids: Vec<ObjectId> = frontier.iter().map(|(o, _, _)| git_object_id(kr, o.as_bytes())).collect();
-        let got: HashMap<ObjectId, (u8, Vec<u8>)> = parallel_get(server, kr, &ids)?.into_iter().map(|(i, k, d)| (i, (k, d))).collect();
+        let ids: Vec<ObjectId> = frontier
+            .iter()
+            .map(|(o, _, _)| git_object_id(kr, o.as_bytes()))
+            .collect();
+        let got: HashMap<ObjectId, (u8, Vec<u8>)> = parallel_get(server, kr, &ids)?
+            .into_iter()
+            .map(|(i, k, d)| (i, (k, d)))
+            .collect();
         let mut next = Vec::new();
         for ((oid, role, required), id) in frontier.into_iter().zip(ids) {
             let Some((kind, data)) = got.get(&id) else {
                 if required {
-                    return Err(ClientError::Integrity(format!("object {oid} missing on server")));
+                    return Err(ClientError::Integrity(format!(
+                        "object {oid} missing on server"
+                    )));
                 }
                 continue;
             };
@@ -47,11 +70,17 @@ pub fn fetch_closure(store: &Store, server: &dyn ObjectServer, kr: &Keyring, roo
                 let m = Manifest::from_bytes(data)?;
                 let t = object_type(m.kind)?;
                 if t == ObjectType::Blob {
-                    let mut w = odb.writer(usize::try_from(m.size).map_err(|_| ClientError::Integrity("too large".into()))?, t)?;
+                    let mut w = odb.writer(
+                        usize::try_from(m.size)
+                            .map_err(|_| ClientError::Integrity("too large".into()))?,
+                        t,
+                    )?;
                     fetch_stream(server, kr, &m, &mut w)?;
                     w.flush()?;
                     if w.finalize()? != oid {
-                        return Err(ClientError::Integrity(format!("object {oid} content mismatch")));
+                        return Err(ClientError::Integrity(format!(
+                            "object {oid} content mismatch"
+                        )));
                     }
                     stats.objects += 1;
                     continue;
@@ -64,7 +93,11 @@ pub fn fetch_closure(store: &Store, server: &dyn ObjectServer, kr: &Keyring, roo
             };
             verify(kind, &data, oid)?;
             stats.objects += 1;
-            let role = if role == Role::Any && kind == ObjectType::Commit { Role::UserCommit } else { role };
+            let role = if role == Role::Any && kind == ObjectType::Commit {
+                Role::UserCommit
+            } else {
+                role
+            };
             if kind == ObjectType::Blob {
                 odb.write(kind, &data)?;
                 continue;
@@ -81,7 +114,9 @@ pub fn fetch_closure(store: &Store, server: &dyn ObjectServer, kr: &Keyring, roo
     // Post-order write of trees/commits/tags.
     let mut stack: Vec<(Oid, bool)> = roots.iter().map(|o| (*o, false)).collect();
     while let Some((oid, expanded)) = stack.pop() {
-        let Some((kind, data, role)) = pending.get(&oid) else { continue };
+        let Some((kind, data, role)) = pending.get(&oid) else {
+            continue;
+        };
         if expanded {
             odb.write(*kind, data)?;
             pending.remove(&oid);

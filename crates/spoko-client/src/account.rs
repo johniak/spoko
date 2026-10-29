@@ -4,8 +4,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use spoko_crypto::{DeviceKeypair, Keyring, RecoveryKey, fingerprint, read_private_file, seal_to, write_private_file};
-use spoko_proto::{BootstrapRequest, DeviceKeyring, KeyringUpdate, PairingStart, PairingStarted, PairingStatus};
+use spoko_crypto::{
+    DeviceKeypair, Keyring, RecoveryKey, fingerprint, read_private_file, seal_to,
+    write_private_file,
+};
+use spoko_proto::{
+    BootstrapRequest, DeviceKeyring, KeyringUpdate, PairingStart, PairingStarted, PairingStatus,
+};
 use uuid::Uuid;
 
 use crate::api::{ApiClient, PollResult};
@@ -34,14 +39,19 @@ struct IdentityFile {
 
 impl std::fmt::Debug for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Identity").field("device_id", &self.device_id).field("device_name", &self.device_name).field("server_url", &self.server_url).finish_non_exhaustive()
+        f.debug_struct("Identity")
+            .field("device_id", &self.device_id)
+            .field("device_name", &self.device_name)
+            .field("server_url", &self.server_url)
+            .finish_non_exhaustive()
     }
 }
 
 impl Identity {
     pub fn load(home: &Path) -> Result<Identity> {
         let bytes = read_private_file(&home.join(IDENTITY_FILE))?;
-        let f: IdentityFile = bincode::deserialize(&bytes).map_err(|e| ClientError::Other(format!("corrupt identity: {e}")))?;
+        let f: IdentityFile = bincode::deserialize(&bytes)
+            .map_err(|e| ClientError::Other(format!("corrupt identity: {e}")))?;
         Ok(Identity {
             device_id: f.device_id,
             device_name: f.device_name,
@@ -61,7 +71,10 @@ impl Identity {
             secret: self.keypair.secret_bytes(),
             keyring: self.keyring.to_bytes(),
         };
-        write_private_file(&home.join(IDENTITY_FILE), &bincode::serialize(&f).expect("identity serializes"))?;
+        write_private_file(
+            &home.join(IDENTITY_FILE),
+            &bincode::serialize(&f).expect("identity serializes"),
+        )?;
         Ok(())
     }
 
@@ -72,11 +85,22 @@ impl Identity {
 
 /// First device of an account (no `recovery`), or recovery of the keyring with the recovery key.
 /// Returns the new recovery key to show the user when one was created.
-pub fn login_bootstrap(home: &Path, server_url: &str, bootstrap_token: &str, device_name: &str, recovery: Option<&RecoveryKey>) -> Result<(Identity, Option<RecoveryKey>)> {
+pub fn login_bootstrap(
+    home: &Path,
+    server_url: &str,
+    bootstrap_token: &str,
+    device_name: &str,
+    recovery: Option<&RecoveryKey>,
+) -> Result<(Identity, Option<RecoveryKey>)> {
     let api = ApiClient::new(server_url, None);
     let keypair = DeviceKeypair::generate();
     let (keyring, new_rk) = match recovery {
-        Some(rk) => (Keyring::from_bytes(&rk.unwrap(&api.recovery(bootstrap_token)?.recovery_wrapped_keyring)?)?, None),
+        Some(rk) => (
+            Keyring::from_bytes(
+                &rk.unwrap(&api.recovery(bootstrap_token)?.recovery_wrapped_keyring)?,
+            )?,
+            None,
+        ),
         None => (Keyring::generate(), Some(RecoveryKey::generate())),
     };
     let req = BootstrapRequest {
@@ -86,7 +110,14 @@ pub fn login_bootstrap(home: &Path, server_url: &str, bootstrap_token: &str, dev
         recovery_wrapped_keyring: new_rk.as_ref().map(|rk| rk.wrap(&keyring.to_bytes())),
     };
     let creds = api.bootstrap(bootstrap_token, &req)?;
-    let id = Identity { device_id: creds.device_id, device_name: device_name.to_owned(), server_url: server_url.to_owned(), token: creds.token, keypair, keyring };
+    let id = Identity {
+        device_id: creds.device_id,
+        device_name: device_name.to_owned(),
+        server_url: server_url.to_owned(),
+        token: creds.token,
+        keypair,
+        keyring,
+    };
     id.save(home)?;
     Ok((id, new_rk))
 }
@@ -103,7 +134,10 @@ pub struct PendingPairing {
 
 pub fn pair_start(server_url: &str, device_name: &str) -> Result<PendingPairing> {
     let keypair = DeviceKeypair::generate();
-    let started = ApiClient::new(server_url, None).pairing_start(&PairingStart { device_name: device_name.to_owned(), device_pubkey: keypair.public() })?;
+    let started = ApiClient::new(server_url, None).pairing_start(&PairingStart {
+        device_name: device_name.to_owned(),
+        device_pubkey: keypair.public(),
+    })?;
     Ok(PendingPairing {
         code: started.code.clone(),
         fingerprint: fingerprint(&keypair.public()),
@@ -120,7 +154,10 @@ impl PendingPairing {
         let deadline = Instant::now() + timeout;
         loop {
             match api.pairing_poll(self.started.pairing_id, &self.started.secret)? {
-                PollResult::Status(PairingStatus::Approved { credentials, wrapped_keyring }) => {
+                PollResult::Status(PairingStatus::Approved {
+                    credentials,
+                    wrapped_keyring,
+                }) => {
                     let keyring = Keyring::from_bytes(&self.keypair.unseal(&wrapped_keyring)?)?;
                     let id = Identity {
                         device_id: credentials.device_id,
@@ -133,7 +170,9 @@ impl PendingPairing {
                     id.save(home)?;
                     return Ok(id);
                 }
-                PollResult::Status(PairingStatus::Expired) | PollResult::Gone => return Err(ClientError::Other("pairing expired".into())),
+                PollResult::Status(PairingStatus::Expired) | PollResult::Gone => {
+                    return Err(ClientError::Other("pairing expired".into()));
+                }
                 PollResult::Status(PairingStatus::Pending) => {}
             }
             if Instant::now() >= deadline {
@@ -145,13 +184,22 @@ impl PendingPairing {
 }
 
 /// Approves a pending pairing after `confirm(device_name, fingerprint)` returns true.
-pub fn pair_approve(id: &Identity, code: &str, confirm: impl Fn(&str, &str) -> bool) -> Result<bool> {
+pub fn pair_approve(
+    id: &Identity,
+    code: &str,
+    confirm: impl Fn(&str, &str) -> bool,
+) -> Result<bool> {
     let api = id.api();
-    let info = api.pairing_by_code(code)?.ok_or_else(|| ClientError::Other(format!("no pending pairing with code {code}")))?;
+    let info = api
+        .pairing_by_code(code)?
+        .ok_or_else(|| ClientError::Other(format!("no pending pairing with code {code}")))?;
     if !confirm(&info.device_name, &fingerprint(&info.device_pubkey)) {
         return Ok(false);
     }
-    api.pairing_approve(info.pairing_id, seal_to(&info.device_pubkey, &id.keyring.to_bytes()))?;
+    api.pairing_approve(
+        info.pairing_id,
+        seal_to(&info.device_pubkey, &id.keyring.to_bytes()),
+    )?;
     Ok(true)
 }
 
@@ -166,10 +214,16 @@ pub fn revoke_device(id: &mut Identity, home: &Path, device: Uuid) -> Result<Rec
         .devices()?
         .into_iter()
         .filter(|d| !d.revoked)
-        .map(|d| DeviceKeyring { device_id: d.id, wrapped_keyring: seal_to(&d.pubkey, &bytes) })
+        .map(|d| DeviceKeyring {
+            device_id: d.id,
+            wrapped_keyring: seal_to(&d.pubkey, &bytes),
+        })
         .collect();
     let rk = RecoveryKey::generate();
-    api.update_keyrings(&KeyringUpdate { per_device, recovery_wrapped_keyring: Some(rk.wrap(&bytes)) })?;
+    api.update_keyrings(&KeyringUpdate {
+        per_device,
+        recovery_wrapped_keyring: Some(rk.wrap(&bytes)),
+    })?;
     id.save(home)?;
     Ok(rk)
 }

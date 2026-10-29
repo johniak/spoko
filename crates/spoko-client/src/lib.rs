@@ -2,6 +2,8 @@
 
 pub mod account;
 pub mod api;
+pub mod engine;
+pub mod notifier;
 #[cfg(feature = "test-util")]
 pub mod test_util;
 pub mod transfer;
