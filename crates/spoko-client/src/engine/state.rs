@@ -15,6 +15,7 @@ pub enum PauseReason {
 
 /// Per-project sync state, persisted as `state.json`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProjectState {
     /// Last snapshot that is both on the server and fully applied here (merge base).
     #[serde(with = "spoko_core::serde_oid::opt", default)]
@@ -41,6 +42,8 @@ pub struct ProjectState {
     /// Conflict paths the user resolved since the last capture.
     pub resolved: BTreeSet<String>,
     pub last_activity_push: i64,
+    /// Version of the activity pointer a device-switch prompt was shown for.
+    pub switch_prompt_version: u64,
 }
 
 impl ProjectState {

@@ -26,11 +26,18 @@ jobs:
       - run: COVERAGE_MIN=90 ./scripts/coverage.sh
   docker:
     runs-on: ubuntu-latest
-    # TODO(Task 24): remove once crates/spoko-docker/tests/real_docker.rs exists.
-    continue-on-error: true
     env: { SPOKO_DOCKER_TESTS: "1" }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p spoko-docker --test real_docker
+
+  volume-portability:
+    # experiment for spec §12 (result recorded in docs/notes/volume-portability.md)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - run: ./scripts/volume-portability.sh

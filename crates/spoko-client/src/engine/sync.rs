@@ -131,6 +131,13 @@ impl Engine {
         Ok(())
     }
 
+    /// Last device that pushed in this project: `(device, time, pointer version)`.
+    pub fn last_activity(&self) -> Result<Option<(uuid::Uuid, i64, u64)>> {
+        let Some(p) = self.ctx.api.get_pointer(self.project_id, &name_id(&self.ctx.keyring, "ptr", "activity"))? else { return Ok(None) };
+        let a: Activity = serde_json::from_slice(&open(&self.ctx.keyring, b"activity", &p.value)?).map_err(|e| ClientError::Integrity(e.to_string()))?;
+        Ok(Some((a.device_id, a.time, p.version)))
+    }
+
     pub fn sync(&mut self) -> Result<SyncOutcome> {
         self.sync_dirty(None)
     }
