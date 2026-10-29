@@ -67,8 +67,9 @@ impl Engine {
         self.ctx.api.objects(self.project_id)
     }
 
-    pub(super) fn fetch(&self, snapshot: Oid) -> Result<()> {
-        fetch_closure(&self.store, &self.objects(), &self.ctx.keyring, &[snapshot])?;
+    pub(super) fn fetch(&mut self, snapshot: Oid) -> Result<()> {
+        let stats = fetch_closure(&self.store, &self.objects(), &self.ctx.keyring, &[snapshot])?;
+        self.known.insert_many(stats.ids)?;
         Ok(())
     }
 
@@ -157,7 +158,8 @@ impl Engine {
                     self.state.base = Some(local);
                     self.state.resolved.clear();
                     self.save()?;
-                    self.push_activity()?;
+                    // best effort: the sync itself already succeeded
+                    let _ = self.push_activity();
                     return Ok(merged.map_or(SyncOutcome::Pushed, |conflicts| {
                         SyncOutcome::Merged { conflicts }
                     }));

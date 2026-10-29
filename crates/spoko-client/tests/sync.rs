@@ -638,3 +638,43 @@ fn small_edit_latency_under_1s() {
     assert_eq!(b.text("d07/f7.txt"), "changed\n");
     assert!(el < std::time::Duration::from_secs(1), "{el:?}");
 }
+
+#[test]
+fn newly_ignored_paths_stay_on_disk_everywhere() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    for i in 0..60 {
+        a.write(&format!("build/f{i:02}"), format!("{i}"));
+    }
+    for i in 0..40 {
+        a.write(&format!("src/s{i:02}"), format!("{i}"));
+    }
+    let mut ea = a.create();
+    let (mut eb, _) = b.join(ea.project_id);
+    a.write(".gitignore", "build/\n");
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::Pushed, "not a mass delete: files are still on disk");
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::FastForwarded);
+    assert!(b.read("build/f00").is_some(), "newly ignored file must not be deleted on B");
+    assert_eq!(b.text(".gitignore"), "build/\n");
+    assert_eq!(eb.sync().unwrap(), SyncOutcome::UpToDate);
+    assert_eq!(ea.sync().unwrap(), SyncOutcome::UpToDate);
+    // a later edit to an ignored file is not synced
+    b.write("build/f00", "changed on b");
+    eb.sync().unwrap();
+    ea.sync().unwrap();
+    assert_eq!(a.text("build/f00"), "0");
+}
+
+#[test]
+fn downloaded_objects_are_known_so_next_push_skips_them() {
+    let mut w = World::new();
+    let a = w.device("a");
+    let b = w.device("b");
+    for i in 0..50 {
+        a.write(&format!("f{i}"), format!("{i}"));
+    }
+    let ea = a.create();
+    let (eb, _) = b.join(ea.project_id);
+    assert!(eb.known_objects() >= 50, "clone must record downloaded ids: {}", eb.known_objects());
+}

@@ -11,9 +11,11 @@ use super::codec::{KIND_MANIFEST, object_type};
 use super::enumerate::{Role, deps};
 use crate::{ClientError, Result};
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DownloadStats {
     pub objects: usize,
+    /// Server ids of everything downloaded (now known to be on the server).
+    pub ids: Vec<ObjectId>,
 }
 
 fn verify(kind: ObjectType, data: &[u8], oid: Oid) -> Result<()> {
@@ -83,6 +85,7 @@ pub fn fetch_closure(
                         )));
                     }
                     stats.objects += 1;
+                    stats.ids.push(id);
                     continue;
                 }
                 let mut buf = Vec::new();
@@ -93,6 +96,7 @@ pub fn fetch_closure(
             };
             verify(kind, &data, oid)?;
             stats.objects += 1;
+            stats.ids.push(id);
             let role = if role == Role::Any && kind == ObjectType::Commit {
                 Role::UserCommit
             } else {

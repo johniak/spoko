@@ -13,7 +13,7 @@ use git2::Oid;
 use spoko_core::checkout::{ApplyError, ApplyFaults, ApplyOpts, apply_tree};
 use spoko_core::config::{CONFIG_FILE, ProjectConfig};
 use spoko_core::external::{ExternalDir, ExternalEnv, PathRewrite, resolve_externals};
-use spoko_core::filter::Matcher;
+use spoko_core::filter::{Class, Matcher};
 use spoko_core::gitstate::{
     self, ApplyGitOutcome, CaptureOutcome, GitState, gitstate_tree, read_gitstate,
 };
@@ -190,6 +190,8 @@ impl Engine {
 
     /// `spoko init`: registers a new project on the server and pushes the first snapshot.
     pub fn create(ctx: DeviceCtx, root: &Path, name: &str) -> Result<Engine> {
+        // validate .spokoconfig before registering anything on the server
+        ProjectConfig::load(root).map_err(spoko_core::Error::from)?;
         let meta = spoko_crypto::seal(&ctx.keyring, b"project", name.as_bytes());
         let info = ctx.api.create_project(&meta)?;
         let mut e = Engine::load(ctx, info.id, root)?;
@@ -311,8 +313,15 @@ impl Engine {
                 work.insert(p.clone(), *e);
             }
         }
+        // paths that left the scan but are still on disk became ignored: not a deletion
+        let mut guard_prev = WorkMap::default();
+        for (p, e) in self.work.iter() {
+            if work.contains_key(p) || read_entry(&p.to_fs(&self.root))?.is_none() {
+                guard_prev.insert(p.clone(), *e);
+            }
+        }
         if !self.state.guard_override
-            && let GuardVerdict::MassDelete { deleted, total } = check_deletions(&self.work, &work)
+            && let GuardVerdict::MassDelete { deleted, total } = check_deletions(&guard_prev, &work)
         {
             self.pause_for(PauseReason::MassDelete { deleted, total })?;
             return Ok(None);
@@ -480,10 +489,34 @@ impl Engine {
                 unmat.insert(p.clone(), new);
             }
         }
-        let changed: Vec<RelPath> = from_w
+        // Config first: the new ignore rules decide what a missing path means. A path the
+        // remote dropped because it is now ignored is forgotten here, never deleted.
+        let mut cfg_to = from_w.clone();
+        for p in from_w.keys().chain(to_w.keys()).filter(|p| is_config_path(p)) {
+            match to_w.get(p) {
+                Some(e) => cfg_to.insert(p.clone(), *e),
+                None => cfg_to.remove(p),
+            };
+        }
+        if cfg_to != from_w {
+            let opts = ApplyOpts { case_insensitive: self.case_insensitive, windows_names: cfg!(windows), faults: self.faults.as_deref().map(|f| f as _), transform: None };
+            match apply_tree(&self.root, &self.store, &mut self.statcache, &from_w, &cfg_to, &opts) {
+                Ok(_) => {}
+                Err(ApplyError::LocalChanged(_)) => return Ok(Applied::LocalChanged),
+                Err(ApplyError::Core(e)) => return Err(e.into()),
+            }
+            self.reload_config()?;
+            from_w = cfg_to;
+            let forgotten: Vec<RelPath> = from_w.keys().filter(|p| !to_w.contains_key(*p) && self.matcher.classify(p, false) == Class::Ignored).cloned().collect();
+            for p in forgotten {
+                from_w.remove(&p);
+                self.statcache.entries.remove(&p);
+            }
+        }
+        let changed: Vec<RelPath> = self.work
             .keys()
-            .chain(to_w.keys())
-            .filter(|p| from_w.get(*p) != to_w.get(*p))
+            .chain(full_to.keys())
+            .filter(|p| self.work.get(*p) != full_to.get(*p))
             .cloned()
             .collect::<BTreeSet<_>>()
             .into_iter()
@@ -517,9 +550,6 @@ impl Engine {
         // the work/ part is on disk now
         self.work = full_to;
         self.state.unmaterialized = unmat;
-        if changed.iter().any(is_config_path) {
-            self.reload_config()?;
-        }
         if !join {
             self.queue_hooks(&changed);
         }
@@ -625,6 +655,11 @@ impl Engine {
                 });
             }
         }
+    }
+
+    /// Number of object ids known to be on the server.
+    pub fn known_objects(&self) -> usize {
+        self.known.len()
     }
 
     pub fn config(&self) -> &ProjectConfig {
